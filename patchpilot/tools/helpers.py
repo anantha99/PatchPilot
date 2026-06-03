@@ -78,9 +78,10 @@ async def run_process(
     command: str,
     timeout_seconds: int,
     risk: CommandRisk,
+    allow_high_risk: bool = False,
 ) -> CommandOutput:
     start = time.perf_counter()
-    if risk == CommandRisk.HIGH:
+    if risk == CommandRisk.HIGH and not allow_high_risk:
         raise PolicyError("High-risk command execution requires explicit high-risk handling")
     process = await asyncio.create_subprocess_shell(
         command,
@@ -151,3 +152,25 @@ def detect_test_command(root: Path) -> str | None:
         return "go test ./..."
     return None
 
+
+def classify_command_risk(command: str) -> CommandRisk:
+    normalized = command.strip().lower()
+    high_markers = [
+        " rm ",
+        "del ",
+        "remove-item",
+        "format ",
+        "mkfs",
+        "shutdown",
+        "reboot",
+        "curl ",
+        "wget ",
+        "Invoke-WebRequest".lower(),
+    ]
+    medium_markers = ["git clean", "git reset", "pip install", "npm install", "poetry install"]
+    padded = f" {normalized} "
+    if any(marker in padded for marker in high_markers):
+        return CommandRisk.HIGH
+    if any(marker in normalized for marker in medium_markers):
+        return CommandRisk.MEDIUM
+    return CommandRisk.LOW

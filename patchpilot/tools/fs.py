@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from patchpilot.schemas.common import CommandRisk, FileBundle, FileContent, JsonObject, PathInput, Permission, ToolNamespace
@@ -89,9 +90,32 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.WRITE,
     )
     async def apply_patch(input: ApplyPatchInput, context: ToolContext) -> ApplyPatchOutput:
-        tmp = create_temp_file(Path(context.repo_root), "patch-", ".diff", input.patch)
-        output = await run_process(Path(context.repo_root), f'git apply "{tmp}"', context.config.command_timeout_seconds, risk=CommandRisk.LOW)
-        return ApplyPatchOutput(applied=output.exit_code == 0, stdout=output.stdout, stderr=output.stderr)
+        root = Path(context.repo_root).resolve()
+        changed_paths = _changed_paths_from_patch(input.patch)
+        before = {
+            path: (root / path).read_text(encoding="utf-8", errors="replace")
+            for path in changed_paths
+            if (root / path).exists()
+        }
+        tmp = create_temp_file(root, "patch-", ".diff", input.patch)
+        git_root_output = await run_process(root, "git rev-parse --show-toplevel", context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+        if git_root_output.exit_code == 0:
+            git_root = Path(git_root_output.stdout.strip()).resolve()
+            directory = root.relative_to(git_root).as_posix()
+            directory_arg = "" if directory == "." else f' --directory="{directory}"'
+            command = f'git apply{directory_arg} "{tmp}"'
+            output = await run_process(git_root, command, context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+        else:
+            output = await run_process(root, f'git apply "{tmp}"', context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+
+        changed = any(
+            (root / path).exists()
+            and (root / path).read_text(encoding="utf-8", errors="replace") != before.get(path)
+            for path in changed_paths
+        )
+        if changed_paths and not changed:
+            changed = _apply_simple_unified_patch(root, input.patch)
+        return ApplyPatchOutput(applied=changed or (output.exit_code == 0 and not changed_paths), stdout=output.stdout, stderr=output.stderr)
 
     @registry.tool(
         name="fs.file_exists",
@@ -178,3 +202,46 @@ def register(registry: ToolRegistry) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json_file(path, input.data)
         return input
+
+
+def _changed_paths_from_patch(patch: str) -> list[Path]:
+    paths: list[Path] = []
+    for match in re.finditer(r"^\+\+\+ b/(.+)$", patch, re.MULTILINE):
+        paths.append(Path(match.group(1).strip()))
+    return paths
+
+
+def _apply_simple_unified_patch(root: Path, patch: str) -> bool:
+    changed = False
+    current: Path | None = None
+    removals: list[str] = []
+    additions: list[str] = []
+    for line in patch.splitlines():
+        if line.startswith("+++ b/"):
+            current = root / line.removeprefix("+++ b/").strip()
+        elif line.startswith("@@"):
+            removals = []
+            additions = []
+        elif current is not None and line.startswith("-") and not line.startswith("---"):
+            removals.append(line[1:])
+        elif current is not None and line.startswith("+") and not line.startswith("+++"):
+            additions.append(line[1:])
+        elif current is not None and removals and additions:
+            changed = _replace_lines(current, removals, additions) or changed
+            removals = []
+            additions = []
+    if current is not None and removals and additions:
+        changed = _replace_lines(current, removals, additions) or changed
+    return changed
+
+
+def _replace_lines(path: Path, removals: list[str], additions: list[str]) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    old = "\n".join(removals)
+    new = "\n".join(additions)
+    if old not in text:
+        return False
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True

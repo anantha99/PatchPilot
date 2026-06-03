@@ -1,0 +1,1 @@
+print("generic command fixture")

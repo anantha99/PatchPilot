@@ -45,7 +45,6 @@ class FinalReport(BaseModel):
     changed_files: list[ChangedFileReport]
     attempts: list[RepairAttemptReport]
     tests_run: list[TestRunReport]
-    subagents: list[dict[str, str]]
+    subagents: list[dict[str, Any]]
     risks: list[str]
     trace_id: str
-

@@ -20,6 +20,7 @@ dist/
 .env.*
 !.env.example
 
+.patchpilot/
 traces/
 reports/
 tmp/

@@ -46,7 +46,7 @@ class ToolExecutor:
                         raw = await spec.handler(model_input, context)
             output = self._validate_output(spec, raw)
             duration_ms = int((time.perf_counter() - start) * 1000)
-            await self._trace(context, "tool.completed", spec.name, "success", {"duration_ms": duration_ms})
+            await self._trace(context, "tool.completed", spec.name, "success", {"duration_ms": duration_ms}, duration_ms)
             return output
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start) * 1000)
@@ -56,6 +56,7 @@ class ToolExecutor:
                 spec.name,
                 "failed",
                 {"duration_ms": duration_ms, "error": str(exc), "error_type": type(exc).__name__},
+                duration_ms,
             )
             raise
 
@@ -98,6 +99,7 @@ class ToolExecutor:
         name: str,
         status: str,
         payload: dict[str, Any],
+        duration_ms: int = 0,
     ) -> None:
         if context.trace_store is not None:
             await context.trace_store.record(
@@ -107,5 +109,5 @@ class ToolExecutor:
                 name=name,
                 status=status,
                 payload=payload,
+                duration_ms=duration_ms,
             )
-

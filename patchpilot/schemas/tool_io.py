@@ -150,6 +150,24 @@ class PatchValidationOutput(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class PatchEdit(BaseModel):
+    path: Path
+    before: str
+    after: str
+
+
+class PatchPlan(BaseModel):
+    task_classification: str
+    root_cause: str
+    edits: list[PatchEdit]
+    summary: str
+
+
+class PatchApplyResult(BaseModel):
+    changed_files: list[Path]
+    summary: str
+
+
 class SummarizeFilesInput(BaseModel):
     paths: list[Path]
     max_chars_per_file: int = 1200
@@ -191,6 +209,23 @@ class CommandHistoryOutput(BaseModel):
     commands: list[CommandOutput]
 
 
+class DetectedCommandOutput(BaseModel):
+    command: str | None = None
+
+
+class CommandRiskInput(BaseModel):
+    command: str
+
+
+class CommandRiskOutput(BaseModel):
+    risk: CommandRisk
+
+
+class TimeoutProbeInput(BaseModel):
+    command: str
+    timeout_seconds: int = 5
+
+
 class ObservationInput(BaseModel):
     text: str
     tags: list[str] = Field(default_factory=list)
@@ -222,6 +257,32 @@ class DecisionInput(BaseModel):
     reason: str
 
 
+class DecisionOutput(BaseModel):
+    decision_id: str
+
+
+class ArtifactInput(BaseModel):
+    key: str
+    value: Any
+
+
+class ArtifactKeyInput(BaseModel):
+    key: str
+
+
+class PhaseInput(BaseModel):
+    phase: str
+
+
+class TraceAssertInput(BaseModel):
+    trace_id: str
+    min_tool_calls: int = 20
+
+
+class FixtureInput(BaseModel):
+    fixture: str = "buggy-python-repo"
+
+
 class EvalSuiteInput(BaseModel):
     suite: str = "smoke"
 
@@ -242,3 +303,17 @@ class SubagentResultOutput(BaseModel):
     status: str
     result: dict[str, Any]
 
+
+class ToolListItem(BaseModel):
+    name: str
+    namespace: str
+    description: str
+    permission: str
+    input_schema: str
+    output_schema: str
+    retry_policy: dict[str, Any]
+    rate_limit: dict[str, Any]
+
+
+class ToolsListOutput(BaseModel):
+    tools: list[ToolListItem]
