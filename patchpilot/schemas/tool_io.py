@@ -41,6 +41,9 @@ class ApplyPatchOutput(BaseModel):
     applied: bool
     stdout: str = ""
     stderr: str = ""
+    changed_files: list[Path] = Field(default_factory=list)
+    hunks_applied: int = 0
+    summary: str = ""
 
 
 class FileExistsOutput(BaseModel):
@@ -141,13 +144,17 @@ class FailureLocationsOutput(BaseModel):
 class PatchValidationInput(BaseModel):
     task_classification: str
     target_files: list[Path]
+    patch: str | None = None
     max_diff_lines: int = 200
     protected_paths: list[Path] = Field(default_factory=lambda: [Path(".git"), Path(".env")])
+    allow_test_only: bool = False
 
 
 class PatchValidationOutput(BaseModel):
     valid: bool
     reasons: list[str] = Field(default_factory=list)
+    target_files: list[Path] = Field(default_factory=list)
+    diff_lines: int = 0
 
 
 class PatchEdit(BaseModel):
@@ -159,7 +166,12 @@ class PatchEdit(BaseModel):
 class PatchPlan(BaseModel):
     task_classification: str
     root_cause: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    expected_changed_files: list[Path] = Field(default_factory=list)
     edits: list[PatchEdit]
+    patch: str
+    risk_notes: list[str] = Field(default_factory=list)
+    validation_expectations: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -266,6 +278,11 @@ class ArtifactInput(BaseModel):
     value: Any
 
 
+class WriteJsonInput(BaseModel):
+    path: Path
+    data: dict[str, Any]
+
+
 class ArtifactKeyInput(BaseModel):
     key: str
 
@@ -298,8 +315,36 @@ class SubagentTaskInput(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class SubagentConfig(BaseModel):
+    kind: str
+    allowed_tools: list[str]
+    max_model_calls: int = 3
+    max_tool_calls: int = 5
+    context_payload: dict[str, Any] = Field(default_factory=dict)
+    output_schema: str
+
+
+class DiagnosisResult(BaseModel):
+    root_cause: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    implicated_files: list[Path] = Field(default_factory=list)
+    recommended_patch_direction: str
+    confidence: float = 0.0
+    risks: list[str] = Field(default_factory=list)
+
+
+class ReviewResult(BaseModel):
+    approved: bool
+    issues: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    regression_risk: str = "unknown"
+    missing_validation: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
 class SubagentResultOutput(BaseModel):
     name: str
+    kind: str
     status: str
     result: dict[str, Any]
 

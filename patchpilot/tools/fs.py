@@ -20,6 +20,7 @@ from patchpilot.schemas.tool_io import (
     StatFileOutput,
     TempFileInput,
     TempFileOutput,
+    WriteJsonInput,
     WriteFileInput,
 )
 from patchpilot.tools.helpers import create_temp_file, read_json_file, read_text, rel_path, repo_path, run_process, sha256_file, write_json_file
@@ -92,14 +93,12 @@ def register(registry: ToolRegistry) -> None:
     async def apply_patch(input: ApplyPatchInput, context: ToolContext) -> ApplyPatchOutput:
         root = Path(context.repo_root).resolve()
         changed_paths = _changed_paths_from_patch(input.patch)
-        before = {
-            path: (root / path).read_text(encoding="utf-8", errors="replace")
-            for path in changed_paths
-            if (root / path).exists()
-        }
+        _validate_patch_paths(root, changed_paths)
+        before = _path_hashes(root, changed_paths)
         tmp = create_temp_file(root, "patch-", ".diff", input.patch)
         git_root_output = await run_process(root, "git rev-parse --show-toplevel", context.config.command_timeout_seconds, risk=CommandRisk.LOW)
-        if git_root_output.exit_code == 0:
+        is_git_worktree = git_root_output.exit_code == 0
+        if is_git_worktree:
             git_root = Path(git_root_output.stdout.strip()).resolve()
             directory = root.relative_to(git_root).as_posix()
             directory_arg = "" if directory == "." else f' --directory="{directory}"'
@@ -108,14 +107,26 @@ def register(registry: ToolRegistry) -> None:
         else:
             output = await run_process(root, f'git apply "{tmp}"', context.config.command_timeout_seconds, risk=CommandRisk.LOW)
 
-        changed = any(
-            (root / path).exists()
-            and (root / path).read_text(encoding="utf-8", errors="replace") != before.get(path)
-            for path in changed_paths
-        )
-        if changed_paths and not changed:
+        changed = _path_hashes(root, changed_paths) != before
+        if changed_paths and not changed and output.exit_code != 0:
             changed = _apply_simple_unified_patch(root, input.patch)
-        return ApplyPatchOutput(applied=changed or (output.exit_code == 0 and not changed_paths), stdout=output.stdout, stderr=output.stderr)
+        applied = changed or (output.exit_code == 0 and not changed_paths)
+        if applied:
+            context.artifacts.setdefault("applied_patches", []).append(
+                {
+                    "patch": input.patch,
+                    "changed_files": [path.as_posix() for path in changed_paths],
+                    "hunks_applied": input.patch.count("\n@@"),
+                }
+            )
+        return ApplyPatchOutput(
+            applied=applied,
+            stdout=output.stdout,
+            stderr=output.stderr,
+            changed_files=changed_paths if applied else [],
+            hunks_applied=input.patch.count("\n@@"),
+            summary=f"Applied patch to {len(changed_paths)} file(s)" if applied else "Patch produced no changes",
+        )
 
     @registry.tool(
         name="fs.file_exists",
@@ -193,15 +204,15 @@ def register(registry: ToolRegistry) -> None:
         name="fs.write_json",
         namespace=ToolNamespace.FS,
         description="Write a JSON file in the repository.",
-        input_schema=JsonObject,
+        input_schema=WriteJsonInput,
         output_schema=JsonObject,
         permission=Permission.WRITE,
     )
-    async def write_json(input: JsonObject, context: ToolContext) -> JsonObject:
-        path = repo_path(Path(context.repo_root), Path(".patchpilot/artifact.json"))
+    async def write_json(input: WriteJsonInput, context: ToolContext) -> JsonObject:
+        path = repo_path(Path(context.repo_root), input.path)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json_file(path, input.data)
-        return input
+        return JsonObject(data={"path": rel_path(Path(context.repo_root), path), "data": input.data})
 
 
 def _changed_paths_from_patch(patch: str) -> list[Path]:
@@ -211,6 +222,18 @@ def _changed_paths_from_patch(patch: str) -> list[Path]:
     return paths
 
 
+def _validate_patch_paths(root: Path, paths: list[Path]) -> None:
+    for path in paths:
+        repo_path(root, path)
+
+
+def _path_hashes(root: Path, paths: list[Path]) -> dict[Path, str | None]:
+    return {
+        path: sha256_file(resolved) if (resolved := repo_path(root, path)).exists() else None
+        for path in paths
+    }
+
+
 def _apply_simple_unified_patch(root: Path, patch: str) -> bool:
     changed = False
     current: Path | None = None
@@ -218,7 +241,7 @@ def _apply_simple_unified_patch(root: Path, patch: str) -> bool:
     additions: list[str] = []
     for line in patch.splitlines():
         if line.startswith("+++ b/"):
-            current = root / line.removeprefix("+++ b/").strip()
+            current = repo_path(root, line.removeprefix("+++ b/").strip())
         elif line.startswith("@@"):
             removals = []
             additions = []

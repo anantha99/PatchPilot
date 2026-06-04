@@ -1,0 +1,34 @@
+name: xarc
+
+x-xarc-base: &xarc-base
+  build:
+    context: .
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+  environment:
+    TMPDIR: /workspace/tmp
+    TEMP: /workspace/tmp
+    TMP: /workspace/tmp
+    PYTEST_DEBUG_TEMPROOT: /workspace/tmp/pytest
+
+services:
+  xarc-test:
+    <<: *xarc-base
+    command: python -m pytest -q
+
+  xarc-smoke:
+    <<: *xarc-base
+    command: python -m patchpilot.cli eval --suite smoke --repo fixtures/buggy-python-repo --model-provider fake
+
+  xarc-live-eval:
+    <<: *xarc-base
+    command: python -m patchpilot.cli eval --suite smoke --repo fixtures/buggy-python-repo --live-eval
+    env_file:
+      - .env
+
+  xarc-shell:
+    <<: *xarc-base
+    command: bash
+    stdin_open: true
+    tty: true

@@ -1,41 +1,287 @@
-"""OpenRouter model client placeholder behind the model contract."""
+"""OpenRouter model client behind the model contract."""
 
 from __future__ import annotations
 
+import json
+import time
+from typing import Any
+
+from aiolimiter import AsyncLimiter
 import httpx
+from pydantic import ValidationError
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from patchpilot.config import PatchPilotConfig
-from patchpilot.errors import ModelError
-from patchpilot.models.base import ModelClient, ToolSelection
+from patchpilot.errors import MissingModelApiKeyError, ModelRequestError, ModelResponseError, ModelSchemaError
+from patchpilot.models.base import ModelCacheMetadata, ModelCallMetadata, ModelClient, ModelJsonResponse, ModelUsage, ToolSelection
+
+
+PHASE_INSTRUCTIONS = {
+    "inspect": "Inspect the repo. Prefer fs.list_dir, code.detect_language, code.detect_package_manager, code.find_tests, exec.detect_test_command, then memory_eval.mark_phase reproduce.",
+    "reproduce": "Run the supplied or detected tests to capture the failing output, then mark phase diagnose.",
+    "diagnose": "Extract failure locations and spawn the diagnosis subagent with the failing output, then record an observation and mark phase plan_patch.",
+    "plan_patch": "Map failing tests to source, read the failing test and implicated source files. PatchPilot will ask you for a typed PatchPlan once enough file evidence is present.",
+    "apply_patch": "Apply the validated stored patch plan. Call fs.apply_patch with the patch from the patch_plan artifact when it appears in recent history.",
+    "validate": "Run targeted tests first, then full tests, then capture git.diff and mark phase review.",
+    "review": "Spawn the review subagent, summarize/retrieve artifacts, then mark phase report.",
+    "report": "Collect command history, export session memory, then finish.",
+}
 
 
 class OpenRouterModelClient(ModelClient):
-    def __init__(self, config: PatchPilotConfig) -> None:
+    provider = "openrouter"
+
+    def __init__(self, config: PatchPilotConfig, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
+        self._transport = transport
+        self._limiter = AsyncLimiter(config.model_rate_limit_calls, config.model_rate_limit_period_seconds)
 
     async def select_tool(self, state, tools) -> ToolSelection:
         if not self.config.openrouter_api_key:
-            raise ModelError("OPENROUTER_API_KEY is required for live model runs")
+            raise MissingModelApiKeyError("OPENROUTER_API_KEY is required for live model runs")
         prompt = {
             "goal": state.goal,
             "phase": state.phase,
-            "tools": tools,
-            "recent_tool_calls": state.tool_history[-5:],
+            "phase_instructions": PHASE_INSTRUCTIONS.get(state.phase, ""),
+            "test_command": state.test_command,
+            "validation_status": state.validation_status,
+            "attempt": state.attempt,
+            "tools": _compact_tools(tools),
+            "recent_tool_calls": state.tool_history[-8:],
+            "last_command_output": _truncate(state.last_command_output, 6000),
+            "last_text_output": _truncate(state.last_text_output, 4000),
         }
-        async with httpx.AsyncClient(base_url=self.config.base_url, timeout=30) as client:
-            response = await client.post(
-                "/chat/completions",
-                headers={"Authorization": f"Bearer {self.config.openrouter_api_key}"},
-                json={
-                    "model": self.config.model,
-                    "messages": [
-                        {"role": "system", "content": "Return JSON with tool_name, arguments, rationale, finish."},
-                        {"role": "user", "content": str(prompt)},
-                    ],
-                    "response_format": {"type": "json_object"},
+        started = time.perf_counter()
+        retry_count = 0
+        async with self._client() as client:
+            async with self._limiter:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(self.config.model_retry_attempts),
+                    wait=wait_exponential(
+                        multiplier=self.config.model_retry_multiplier,
+                        max=self.config.model_retry_max_wait,
+                    ),
+                    retry=retry_if_exception_type((httpx.HTTPError, ModelRequestError, ModelResponseError)),
+                    reraise=True,
+                ):
+                    with attempt:
+                        retry_count = attempt.retry_state.attempt_number - 1
+                        response = await client.post(
+                            "/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                                "HTTP-Referer": "https://github.com/patchpilot/patchpilot",
+                                "X-Title": "PatchPilot",
+                            },
+                            json=self._request_body(prompt),
+                        )
+                        if response.status_code >= 400:
+                            raise ModelRequestError(
+                                "OpenRouter call failed",
+                                {"status_code": response.status_code, "body": response.text[:1000]},
+                            )
+                        duration_ms = int((time.perf_counter() - started) * 1000)
+                        return self._selection_from_response(response, duration_ms=duration_ms, retry_count=retry_count)
+        raise ModelResponseError("OpenRouter did not return a tool selection")
+
+    async def complete_json(
+        self,
+        *,
+        prompt: dict[str, Any],
+        schema_name: str,
+        json_schema: dict[str, Any],
+    ) -> ModelJsonResponse:
+        if not self.config.openrouter_api_key:
+            raise MissingModelApiKeyError("OPENROUTER_API_KEY is required for live model runs")
+        started = time.perf_counter()
+        retry_count = 0
+        async with self._client() as client:
+            async with self._limiter:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(self.config.model_retry_attempts),
+                    wait=wait_exponential(
+                        multiplier=self.config.model_retry_multiplier,
+                        max=self.config.model_retry_max_wait,
+                    ),
+                    retry=retry_if_exception_type((httpx.HTTPError, ModelRequestError, ModelResponseError)),
+                    reraise=True,
+                ):
+                    with attempt:
+                        retry_count = attempt.retry_state.attempt_number - 1
+                        response = await client.post(
+                            "/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                                "HTTP-Referer": "https://github.com/patchpilot/patchpilot",
+                                "X-Title": "PatchPilot",
+                            },
+                            json={
+                                "model": self.config.model,
+                                "messages": [
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            f"Return only JSON matching the {schema_name} schema. "
+                                            "Do not include markdown. Use repository-relative paths."
+                                        ),
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": json.dumps(
+                                            {"schema_name": schema_name, "json_schema": json_schema, "task": prompt},
+                                            default=str,
+                                        ),
+                                    },
+                                ],
+                                "response_format": {"type": "json_object"},
+                            },
+                        )
+                        if response.status_code >= 400:
+                            raise ModelRequestError(
+                                "OpenRouter structured JSON call failed",
+                                {"status_code": response.status_code, "body": response.text[:1000]},
+                            )
+                        duration_ms = int((time.perf_counter() - started) * 1000)
+                        data, metadata = self._json_from_response(response, duration_ms=duration_ms, retry_count=retry_count)
+                        return ModelJsonResponse(data=data, metadata=metadata)
+        raise ModelResponseError("OpenRouter did not return structured JSON")
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=self.config.base_url, timeout=30, transport=self._transport)
+
+    def _request_body(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are PatchPilot's tool-selection model. Return only JSON matching this shape: "
+                        "{\"tool_name\": string|null, \"arguments\": object, \"rationale\": string, \"finish\": boolean}."
+                    ),
                 },
-            )
-        if response.status_code >= 400:
-            raise ModelError("OpenRouter call failed", {"status_code": response.status_code, "body": response.text})
-        content = response.json()["choices"][0]["message"]["content"]
-        return ToolSelection.model_validate_json(content)
+                {"role": "user", "content": json.dumps(prompt, default=str)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.config.enable_prompt_cache:
+            body["provider"] = {"require_parameters": False}
+        return body
+
+    def _json_from_response(
+        self,
+        response: httpx.Response,
+        *,
+        duration_ms: int,
+        retry_count: int,
+    ) -> tuple[dict[str, Any], ModelCallMetadata]:
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise ModelResponseError("OpenRouter returned invalid JSON", {"body": response.text[:1000]}) from exc
+        try:
+            choice = payload["choices"][0]
+            message = choice["message"]
+            content = message.get("content")
+            finish_reason = choice.get("finish_reason")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ModelResponseError("OpenRouter response is missing chat completion fields", {"payload": payload}) from exc
+        if finish_reason not in {None, "stop", "tool_calls"}:
+            raise ModelResponseError("OpenRouter returned unsupported finish state", {"finish_reason": finish_reason})
+        if content is None:
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                content = ((tool_calls[0].get("function") or {}).get("arguments"))
+        if content is None and isinstance(message.get("reasoning"), str):
+            reasoning = message["reasoning"].strip()
+            if reasoning.startswith("{") and reasoning.endswith("}"):
+                content = reasoning
+        if content is None:
+            raise ModelResponseError("OpenRouter returned empty message content", {"id": payload.get("id"), "finish_reason": finish_reason})
+        try:
+            data = content if isinstance(content, dict) else json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ModelSchemaError("OpenRouter structured response was not JSON", {"content": content}) from exc
+        metadata = ModelCallMetadata(
+            provider=self.provider,
+            model=str(payload.get("model") or self.config.model),
+            provider_request_id=payload.get("id"),
+            finish_reason=finish_reason,
+            duration_ms=duration_ms,
+            retry_count=retry_count,
+            usage=self._usage(payload.get("usage") or {}),
+            cache=self._cache(payload.get("usage") or {}),
+        )
+        return data, metadata
+
+    def _selection_from_response(self, response: httpx.Response, *, duration_ms: int, retry_count: int) -> ToolSelection:
+        data, metadata = self._json_from_response(response, duration_ms=duration_ms, retry_count=retry_count)
+        try:
+            selection = ToolSelection.model_validate(data)
+        except (ValidationError, ValueError) as exc:
+            raise ModelSchemaError("OpenRouter tool selection did not match schema", {"content": data}) from exc
+        selection.metadata = metadata
+        return selection
+
+    def _usage(self, usage: dict[str, Any]) -> ModelUsage:
+        return ModelUsage(
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            estimated_cost=_float_or_none(usage.get("cost") or usage.get("estimated_cost")),
+        )
+
+    def _cache(self, usage: dict[str, Any]) -> ModelCacheMetadata:
+        details = usage.get("prompt_tokens_details") or {}
+        read_tokens = usage.get("cache_read_tokens") or details.get("cached_tokens")
+        write_tokens = usage.get("cache_write_tokens")
+        return ModelCacheMetadata(
+            cache_hit=bool(read_tokens) if read_tokens is not None else None,
+            cache_read_tokens=read_tokens,
+            cache_write_tokens=write_tokens,
+            raw={key: value for key, value in usage.items() if "cache" in key.lower()},
+        )
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[-max_chars:]
+
+
+def _compact_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for tool in tools:
+        schema = tool.get("input_json_schema") or {}
+        properties = schema.get("properties") or {}
+        fields = {
+            name: {
+                key: value
+                for key, value in {
+                    "type": spec.get("type"),
+                    "default": spec.get("default"),
+                    "description": spec.get("description"),
+                }.items()
+                if value is not None
+            }
+            for name, spec in properties.items()
+        }
+        compact.append(
+            {
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "input_schema": tool.get("input_schema"),
+                "required": schema.get("required") or [],
+                "fields": fields,
+            }
+        )
+    return compact

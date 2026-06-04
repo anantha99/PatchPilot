@@ -1,0 +1,7 @@
+{
+  "goal": "Fix the failing pytest test in the mock store pricing code.",
+  "test_command": "pytest",
+  "expected_changed_files": ["mock_store/pricing.py"],
+  "expected_passing_command": "pytest",
+  "expected_risk_notes": ["The repair should keep cart_total using apply_discount and should not edit tests."]
+}

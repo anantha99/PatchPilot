@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+import warnings
 
 from pydantic import BaseModel
+from pydantic.json_schema import PydanticJsonSchemaWarning
 
 from patchpilot.errors import ToolError
 from patchpilot.schemas.common import Permission, ToolNamespace
@@ -34,6 +36,25 @@ class ToolSpec:
     permission: Permission
     retry_policy: RetryPolicy
     rate_limit: RateLimitPolicy
+
+    def metadata(self, *, include_policy: bool = True, include_json_schema: bool = False) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace.value,
+            "description": self.description,
+            "permission": self.permission.value,
+            "input_schema": self.input_schema.__name__,
+            "output_schema": self.output_schema.__name__,
+        }
+        if include_json_schema:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", PydanticJsonSchemaWarning)
+                data["input_json_schema"] = self.input_schema.model_json_schema()
+                data["output_json_schema"] = self.output_schema.model_json_schema()
+        if include_policy:
+            data["retry_policy"] = self.retry_policy.model_dump()
+            data["rate_limit"] = self.rate_limit.model_dump()
+        return data
 
 
 @dataclass(slots=True)
@@ -122,4 +143,3 @@ class ToolRegistry:
         for name in allowed_names:
             view.register(self.get(name))
         return view
-

@@ -1,7 +1,7 @@
 ---
 title: PatchPilot X-ARC Failing-Test Repair Plan
 type: feat
-status: active
+status: completed
 date: 2026-06-03
 origin: PRD.md
 ---

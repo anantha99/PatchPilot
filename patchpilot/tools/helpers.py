@@ -166,6 +166,12 @@ def classify_command_risk(command: str) -> CommandRisk:
         "curl ",
         "wget ",
         "Invoke-WebRequest".lower(),
+        "python -c",
+        "py -c",
+        "powershell",
+        "pwsh",
+        "rmdir",
+        "shutil.rmtree",
     ]
     medium_markers = ["git clean", "git reset", "pip install", "npm install", "poetry install"]
     padded = f" {normalized} "

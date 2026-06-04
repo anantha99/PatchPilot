@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,8 @@ class ChangedFileReport(BaseModel):
 
 
 class TestRunReport(BaseModel):
+    __test__: ClassVar[bool] = False
+
     command: str
     exit_code: int
     status: Literal["passed", "failed"]
@@ -48,3 +50,10 @@ class FinalReport(BaseModel):
     subagents: list[dict[str, Any]]
     risks: list[str]
     trace_id: str
+    tool_calls: int = 0
+    model_provider: str | None = None
+    model: str | None = None
+    model_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    estimated_cost: float | None = None
+    cache_summary: dict[str, Any] = Field(default_factory=dict)
+    failure_reason: str | None = None

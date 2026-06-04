@@ -212,11 +212,41 @@ def register(registry: ToolRegistry) -> None:
     )
     async def validate_patch_shape(input: PatchValidationInput, context: ToolContext) -> PatchValidationOutput:
         reasons: list[str] = []
+        root = Path(context.repo_root)
+        normalized_targets: list[Path] = []
         for target in input.target_files:
+            try:
+                rel = rel_path(root, repo_path(root, target))
+                normalized_targets.append(rel)
+            except Exception as exc:
+                reasons.append(f"path escapes repo: {target}")
+                continue
             for protected in input.protected_paths:
-                if str(target).startswith(str(protected)):
-                    reasons.append(f"protected path: {target}")
-        return PatchValidationOutput(valid=len(reasons) == 0, reasons=reasons)
+                protected_text = protected.as_posix().rstrip("/")
+                if rel.as_posix() == protected_text or rel.as_posix().startswith(f"{protected_text}/"):
+                    reasons.append(f"protected path: {rel}")
+        patch_lines = 0
+        if input.patch:
+            patch_lines = len([line for line in input.patch.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))])
+            if patch_lines > input.max_diff_lines:
+                reasons.append(f"diff too large: {patch_lines} lines exceeds {input.max_diff_lines}")
+            patch_targets = _changed_paths_from_patch_text(input.patch)
+            for target in patch_targets:
+                try:
+                    rel = rel_path(root, repo_path(root, target))
+                    for protected in input.protected_paths:
+                        protected_text = protected.as_posix().rstrip("/")
+                        if rel.as_posix() == protected_text or rel.as_posix().startswith(f"{protected_text}/"):
+                            reasons.append(f"protected path: {rel}")
+                    if rel not in normalized_targets:
+                        reasons.append(f"patch touches undeclared file: {rel}")
+                except Exception:
+                    reasons.append(f"path escapes repo: {target}")
+        if normalized_targets and not input.allow_test_only and all(_is_test_path(path) for path in normalized_targets):
+            reasons.append("test-only patch rejected for source_fix task")
+        output = PatchValidationOutput(valid=len(reasons) == 0, reasons=reasons, target_files=normalized_targets, diff_lines=patch_lines)
+        context.artifacts["patch_validation"] = output.model_dump(mode="json")
+        return output
 
     @registry.tool(
         name="code.summarize_files",
@@ -235,3 +265,11 @@ def register(registry: ToolRegistry) -> None:
             chunks.append(f"## {path}\n{content[:input.max_chars_per_file]}")
         return TextOutput(text="\n\n".join(chunks))
 
+
+def _changed_paths_from_patch_text(patch: str) -> list[Path]:
+    return [Path(match.group(1).strip()) for match in re.finditer(r"^\+\+\+ b/(.+)$", patch, re.MULTILINE)]
+
+
+def _is_test_path(path: Path) -> bool:
+    text = path.as_posix()
+    return "/tests/" in f"/{text}" or path.name.startswith("test_") or path.name.endswith("_test.py")

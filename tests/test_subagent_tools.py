@@ -22,3 +22,5 @@ def test_subagent_tool_returns_valid_shape(tmp_path: Path) -> None:
     assert output.name == "diagnosis"
     assert output.status == "success"
     assert output.result["scoped"] is True
+    assert output.result["recommended_patch_direction"]
+    assert "fs.apply_patch" not in output.result["config"]["allowed_tools"]

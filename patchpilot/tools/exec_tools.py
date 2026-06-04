@@ -28,7 +28,7 @@ from patchpilot.tools.registry import ToolContext, ToolRegistry
 async def _run(input: RunCommandInput, context: ToolContext) -> CommandOutput:
     command = _normalize_command(input.command)
     risk = classify_command_risk(command)
-    if input.risk != CommandRisk.LOW:
+    if _risk_level(input.risk) > _risk_level(risk):
         risk = input.risk
     output = await run_process(
         Path(context.repo_root),
@@ -47,6 +47,14 @@ def _normalize_command(command: str) -> str:
     if command.startswith("pytest "):
         return f'"{sys.executable}" -m pytest {command.removeprefix("pytest ")}'
     return command
+
+
+def _risk_level(risk: CommandRisk) -> int:
+    return {
+        CommandRisk.LOW: 1,
+        CommandRisk.MEDIUM: 2,
+        CommandRisk.HIGH: 3,
+    }[risk]
 
 
 def register(registry: ToolRegistry) -> None:
@@ -160,13 +168,17 @@ def register(registry: ToolRegistry) -> None:
             context,
         )
 
-    for name, command in {
-        "exec.run_formatter": "python -m black --check .",
-        "exec.run_linter": "python -m ruff check .",
-        "exec.run_typecheck": "python -m mypy .",
+    for name, (command, executable) in {
+        "exec.run_formatter": ("python -m black --check .", "black"),
+        "exec.run_linter": ("python -m ruff check .", "ruff"),
+        "exec.run_typecheck": ("python -m mypy .", "mypy"),
     }.items():
-        async def optional_tool(input: EmptyInput, context: ToolContext, command: str = command) -> CommandOutput:
-            executable = command.split()[2] if command.startswith("python -m ") else command.split()[0]
+        async def optional_tool(
+            input: EmptyInput,
+            context: ToolContext,
+            command: str = command,
+            executable: str = executable,
+        ) -> CommandOutput:
             if executable in {"black", "ruff", "mypy"} and shutil.which(executable) is None:
                 return CommandOutput(command=command, stdout="", stderr=f"{executable} is unavailable", exit_code=127, duration_ms=0, risk=CommandRisk.LOW)
             return await _run(RunCommandInput(command=command), context)

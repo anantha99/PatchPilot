@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
+from patchpilot.evals.checks import trace_tool_checks
+from patchpilot.errors import ToolValidationError
 from patchpilot.schemas.common import EmptyInput, JsonObject, Permission, TextOutput, ToolNamespace
 from patchpilot.schemas.tool_io import (
     ArtifactInput,
@@ -19,6 +22,7 @@ from patchpilot.schemas.tool_io import (
     ObservationInput,
     ObservationOutput,
     PhaseInput,
+    PatchPlan,
     RetrieveArtifactsInput,
     TraceAssertInput,
 )
@@ -91,7 +95,13 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def store_artifact(input: ArtifactInput, context: ToolContext) -> JsonObject:
-        context.artifacts[input.key] = input.value
+        value = input.value
+        if input.key == "patch_plan":
+            try:
+                value = PatchPlan.model_validate(value).model_dump(mode="json")
+            except Exception as exc:
+                raise ToolValidationError("Invalid patch_plan artifact", {"error": str(exc)}) from exc
+        context.artifacts[input.key] = value
         return JsonObject(data={"key": input.key, "stored": True})
 
     @registry.tool(
@@ -139,9 +149,7 @@ def register(registry: ToolRegistry) -> None:
     )
     async def assert_trace_properties(input: TraceAssertInput, context: ToolContext) -> EvalScoreOutput:
         events = context.trace_store.read(input.trace_id) if context.trace_store else []
-        completed = [event for event in events if event.event_type == "tool.completed"]
-        has_subagent = any(event.name.startswith("subagent.") for event in completed)
-        checks = {"min_tool_calls": len(completed) >= input.min_tool_calls, "subagent": has_subagent}
+        checks = trace_tool_checks(events, min_tool_calls=input.min_tool_calls)
         return EvalScoreOutput(passed=all(checks.values()), score=sum(checks.values()) / len(checks), checks=checks)
 
     @registry.tool(
@@ -153,4 +161,23 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def export_session(input: EmptyInput, context: ToolContext) -> JsonObject:
-        return JsonObject(data={"artifacts": context.artifacts, "commands": [cmd.model_dump(mode="json") for cmd in context.command_history]})
+        return JsonObject(data={"artifacts": _json_safe(context.artifacts), "commands": [cmd.model_dump(mode="json") for cmd in context.command_history]})
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "model_dump"):
+        return _json_safe(value.model_dump(mode="json"))
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            if key.endswith("_runtime"):
+                continue
+            safe[str(key)] = _json_safe(item)
+        return safe
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return repr(value)

@@ -29,6 +29,26 @@ class ModelError(PatchPilotError):
     """A model provider call failed."""
 
 
+class MissingModelApiKeyError(ModelError):
+    """A live model provider was selected without required credentials."""
+
+
+class ModelRequestError(ModelError):
+    """The model provider request failed."""
+
+
+class ModelResponseError(ModelError):
+    """The model provider returned an unsupported or invalid response."""
+
+
+class ModelSchemaError(ModelResponseError):
+    """The model response did not match PatchPilot's structured schema."""
+
+
+class ModelBudgetError(ModelError):
+    """The configured model-call budget was exhausted."""
+
+
 class RateLimitError(PatchPilotError):
     """A configured rate limit prevented execution."""
 
@@ -43,4 +63,3 @@ class ExecutionTimeoutError(ToolError):
 
 class PolicyError(ToolError):
     """A tool call violated a permission or execution policy."""
-

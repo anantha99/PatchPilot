@@ -11,8 +11,16 @@ from patchpilot.tools.registry import ToolContext, ToolRegistry
 
 
 async def _git(context: ToolContext, args: str) -> GitCommandOutput:
+    root = Path(context.repo_root)
+    if not (root / ".git").exists():
+        if args.startswith("diff"):
+            patches = context.artifacts.get("applied_patches", []) if context.artifacts else []
+            if patches:
+                stdout = "\n\n".join(str(item.get("patch", "")) for item in patches if item.get("patch"))
+                return GitCommandOutput(stdout=stdout, stderr="", exit_code=0)
+        return GitCommandOutput(stdout="", stderr=f"not a git repository: {root}", exit_code=1)
     output = await run_process(
-        Path(context.repo_root),
+        root,
         f"git {args}",
         context.config.command_timeout_seconds,
         CommandRisk.LOW,
@@ -168,4 +176,3 @@ def register(registry: ToolRegistry) -> None:
     )
     async def summarize_diff(input: EmptyInput, context: ToolContext) -> GitCommandOutput:
         return await _git(context, "diff --stat")
-

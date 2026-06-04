@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Literal
 
 import typer
 
 from patchpilot.config import PatchPilotConfig
 from patchpilot.evals.suites import run_suite
 from patchpilot.models.fake import FakeModelClient
+from patchpilot.models.openrouter import OpenRouterModelClient
 from patchpilot.observability.tracing import TraceStore
 from patchpilot.runtime.graph import RepairRuntime
+from patchpilot.schemas.tool_io import ToolListItem, ToolsListOutput
 from patchpilot.tools import build_registry
 
 app = typer.Typer(help="PatchPilot autonomous failing-test repair agent.")
@@ -30,37 +33,35 @@ def run(
     allow_write: bool = typer.Option(False, "--allow-write"),
     allow_exec: bool = typer.Option(False, "--allow-exec"),
     allow_high_risk_exec: bool = typer.Option(False, "--allow-high-risk-exec"),
+    model_provider: Literal["fake", "openrouter"] = typer.Option("openrouter", "--model-provider"),
+    model: str | None = typer.Option(None, "--model"),
+    base_url: str | None = typer.Option(None, "--base-url"),
+    max_model_calls: int | None = typer.Option(None, "--max-model-calls"),
+    prompt_cache: bool = typer.Option(True, "--prompt-cache/--no-prompt-cache"),
     trace_dir: Path | None = typer.Option(None, "--trace-dir"),
 ) -> None:
     config = PatchPilotConfig.from_env(
         repo=repo,
+        model_provider=model_provider,
+        **({"model": model} if model else {}),
+        **({"base_url": base_url} if base_url else {}),
+        **({"max_model_calls": max_model_calls} if max_model_calls is not None else {}),
+        enable_prompt_cache=prompt_cache,
         allow_write=allow_write,
         allow_exec=allow_exec,
         allow_high_risk_exec=allow_high_risk_exec,
         trace_dir=trace_dir or repo / ".patchpilot" / "traces",
     )
-    report = asyncio.run(RepairRuntime(config, FakeModelClient()).run(goal, test_command))
+    model = OpenRouterModelClient(config) if model_provider == "openrouter" else FakeModelClient()
+    report = asyncio.run(RepairRuntime(config, model).run(goal, test_command))
     typer.echo(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
 
 
 @tools_app.command("list")
 def list_tools() -> None:
     registry = build_registry()
-    rows = []
-    for spec in registry.list():
-        rows.append(
-            {
-                "name": spec.name,
-                "namespace": spec.namespace.value,
-                "description": spec.description,
-                "permission": spec.permission.value,
-                "input_schema": spec.input_schema.__name__,
-                "output_schema": spec.output_schema.__name__,
-                "retry_policy": spec.retry_policy.model_dump(),
-                "rate_limit": spec.rate_limit.model_dump(),
-            }
-        )
-    typer.echo(json.dumps(rows, indent=2, sort_keys=True))
+    output = ToolsListOutput(tools=[ToolListItem.model_validate(spec.metadata()) for spec in registry.list()])
+    typer.echo(json.dumps(output.model_dump(mode="json"), indent=2, sort_keys=True))
 
 
 @trace_app.command("show")
@@ -72,9 +73,16 @@ def show_trace(trace_id: str, trace_dir: Path = typer.Option(Path(".patchpilot/t
 @app.command()
 def eval(
     suite: str = typer.Option("smoke", "--suite"),
-    repo: Path = typer.Option(Path("fixtures/buggy-python-repo"), "--repo"),
+    repo: Path = typer.Option(Path("fixtures/mock-store-python"), "--repo"),
+    model_provider: Literal["openrouter", "fake"] = typer.Option("openrouter", "--model-provider"),
+    model: str | None = typer.Option(None, "--model"),
+    live_eval: bool = typer.Option(False, "--live-eval"),
 ) -> None:
-    result = asyncio.run(run_suite(suite, repo))
+    try:
+        result = asyncio.run(run_suite(suite, repo, model_provider=model_provider, model=model, live_eval=live_eval))
+    except ValueError as exc:
+        typer.echo(json.dumps({"error": {"type": "unknown_eval_suite", "message": str(exc)}}, indent=2, sort_keys=True))
+        raise typer.Exit(code=1) from exc
     typer.echo(json.dumps(result, indent=2, sort_keys=True))
 
 

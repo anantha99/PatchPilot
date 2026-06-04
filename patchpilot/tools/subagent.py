@@ -49,7 +49,7 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def list_results(input: SubagentTaskInput, context: ToolContext) -> SubagentResultOutput:
-        return SubagentResultOutput(name="subagent.results", status="success", result={"items": context.artifacts.get("subagents", [])})
+        return SubagentResultOutput(name="subagent.results", kind="list_results", status="success", result={"items": context.artifacts.get("subagents", [])})
 
     @registry.tool(
         name="subagent.validate_result",
@@ -60,4 +60,4 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def validate_result(input: SubagentTaskInput, context: ToolContext) -> SubagentResultOutput:
-        return SubagentResultOutput(name="subagent.validate_result", status="success", result={"valid": True, "task": input.task})
+        return SubagentResultOutput(name="subagent.validate_result", kind="validate_result", status="success", result={"valid": True, "task": input.task})

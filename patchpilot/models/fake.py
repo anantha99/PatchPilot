@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from patchpilot.models.base import ModelClient, ToolSelection
+from patchpilot.models.base import ModelClient, ModelJsonResponse, ToolSelection
 
 
 class FakeModelClient(ModelClient):
     """A deterministic model that still chooses tools through the public contract."""
+
+    provider = "fake"
 
     def __init__(self) -> None:
         self.index = 0
@@ -37,6 +39,7 @@ class FakeModelClient(ModelClient):
             "+    return a + b\n"
         )
         command = state.test_command or "pytest"
+        targeted_command = f"pytest {test}" if command == "pytest" else command
         return [
             ("memory_eval.mark_phase", {"phase": "inspect"}, "start inspect phase"),
             ("fs.list_dir", {"path": "."}, "inspect repository root"),
@@ -46,6 +49,7 @@ class FakeModelClient(ModelClient):
             ("exec.detect_test_command", {}, "detect test command"),
             ("memory_eval.mark_phase", {"phase": "reproduce"}, "start reproduce phase"),
             ("exec.run_tests", {"command": command}, "reproduce failing test"),
+            ("memory_eval.mark_phase", {"phase": "diagnose"}, "start diagnose phase"),
             ("code.extract_failure_locations", {"output": state.last_command_output}, "extract failure locations"),
             ("subagent.spawn_diagnosis", {"task": "diagnose pytest failure", "context": {"output": state.last_command_output}}, "isolate diagnosis"),
             ("memory_eval.record_observation", {"text": "pytest failure points at add returning subtraction", "tags": ["diagnosis"]}, "record diagnosis observation"),
@@ -53,13 +57,13 @@ class FakeModelClient(ModelClient):
             ("code.map_test_to_source", {"path": test}, "map failing test to source"),
             ("fs.read_file", {"path": source}, "read source"),
             ("fs.read_file", {"path": test}, "read test"),
-            ("memory_eval.store_artifact", {"key": "patch_plan", "value": {"task_classification": "source_fix", "root_cause": "add subtracts", "edits": [{"path": source, "before": before, "after": after}], "summary": "Change add to return sum."}}, "store patch plan"),
+            ("memory_eval.store_artifact", {"key": "patch_plan", "value": {"task_classification": "source_fix", "root_cause": "add subtracts", "expected_changed_files": [source], "edits": [{"path": source, "before": before, "after": after}], "patch": patch, "summary": "Change add to return sum."}}, "store patch plan"),
             ("code.validate_patch_shape", {"task_classification": "source_fix", "target_files": [source], "max_diff_lines": 200}, "validate patch shape"),
             ("memory_eval.record_decision", {"decision": "apply_patch", "reason": "patch plan validated and only touches source file"}, "record write gate decision"),
             ("memory_eval.mark_phase", {"phase": "apply_patch"}, "start apply phase"),
             ("fs.apply_patch", {"patch": patch}, "apply validated patch"),
             ("memory_eval.mark_phase", {"phase": "validate"}, "start validation phase"),
-            ("exec.run_targeted_tests", {"command": f"pytest {test}"}, "run targeted validation"),
+            ("exec.run_targeted_tests", {"command": targeted_command}, "run targeted validation"),
             ("exec.run_tests", {"command": command}, "run full validation"),
             ("git.diff", {}, "capture final diff"),
             ("memory_eval.mark_phase", {"phase": "review"}, "start review phase"),
@@ -70,3 +74,12 @@ class FakeModelClient(ModelClient):
             ("exec.command_history", {}, "collect command history"),
             ("memory_eval.export_session", {}, "export session memory"),
         ]
+
+    async def complete_json(
+        self,
+        *,
+        prompt: dict[str, Any],
+        schema_name: str,
+        json_schema: dict[str, Any],
+    ) -> ModelJsonResponse:
+        return ModelJsonResponse(data={})
