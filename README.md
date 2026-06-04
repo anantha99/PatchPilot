@@ -1,14 +1,117 @@
 # PatchPilot
 
-PatchPilot is a production-shaped repository automation agent for bounded maintenance loops. It inspects a local repository, reproduces failures, delegates diagnosis and review to scoped subagents, plans and applies minimal patches, validates with tests, and emits an auditable trace.
+PatchPilot is a repository repair agent for bounded maintenance loops. It inspects a local repo, reproduces failures, asks a real model to choose phase-scoped tools, delegates diagnosis and review to scoped subagents, creates a typed patch plan, validates the patch before writing, applies the patch, reruns tests, and emits an auditable JSON report plus JSONL trace.
 
-The v1 target is Python/pytest reliability with a language-agnostic core and generic `--test-command` support for other stacks. Product and eval runs default to OpenRouter with GLM-4.7 Flash (`z-ai/glm-4.7-flash`); deterministic fake models remain available only as an explicit offline/test path.
+The v1 focus is Python/pytest repair on small product repositories. The demo repository is mocked and controlled, but the agent path is real: OpenRouter model calls, model-selected tools, structured subagent outputs, patch validation, file writes, tests, and final report generation all run through PatchPilot.
 
-See [PRODUCT.md](PRODUCT.md) and [PRD.md](PRD.md) for the project plan.
+## What v1 Can Do
 
-## Quick Start
+- Repair a failing Python/pytest fixture repository through the real OpenRouter provider.
+- Use configurable OpenRouter models such as `z-ai/glm-4.7-flash` or `minimax/minimax-m3`.
+- Run phase-scoped tool selection across inspect, reproduce, diagnose, plan patch, apply patch, validate, review, and report.
+- Spawn isolated diagnosis and review subagents with scoped tools and structured output schemas.
+- Generate a typed `PatchPlan`, validate changed files, protected paths, diff size, and test-only edits before writes.
+- Apply a minimal source patch and rerun targeted plus full pytest validation.
+- Produce a final JSON report with status, root cause, changed files, tests run, subagents, model/provider, cost metadata, tool count, and trace ID.
+- Score a smoke eval from persisted traces and final reports rather than private runtime state.
 
-For agent and CI verification, prefer the canonical wrapper:
+## Setup
+
+Use Python 3.11+.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+For live model runs, set an OpenRouter key. The CLI also reads `.env` when present.
+
+```powershell
+$env:OPENROUTER_API_KEY = "..."
+```
+
+Optional model configuration:
+
+- `PATCHPILOT_MODEL`
+- `PATCHPILOT_BASE_URL`
+- `PATCHPILOT_MODEL_PROVIDER`
+- `PATCHPILOT_MAX_MODEL_CALLS`
+- `PATCHPILOT_PROMPT_CACHE`
+
+## Real Model Demo
+
+Primary v1 demo:
+
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli run `
+  --repo fixtures\mock-store-python `
+  --goal "Fix the failing pytest test" `
+  --allow-exec `
+  --allow-write `
+  --model-provider openrouter `
+  --model minimax/minimax-m3
+```
+
+Default GLM path:
+
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli run `
+  --repo fixtures\mock-store-python `
+  --goal "Fix the failing pytest test" `
+  --allow-exec `
+  --allow-write `
+  --model-provider openrouter `
+  --model z-ai/glm-4.7-flash
+```
+
+The run prints a final JSON report to stdout and records the same report as a `run.completed` trace event under:
+
+```text
+fixtures/mock-store-python/.patchpilot/traces/
+```
+
+## Smoke Eval
+
+Real OpenRouter smoke eval:
+
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli eval `
+  --suite smoke `
+  --repo fixtures\mock-store-python `
+  --model-provider openrouter `
+  --model minimax/minimax-m3 `
+  --live-eval
+```
+
+A verified MiniMax run produced:
+
+```json
+{
+  "provider": "openrouter",
+  "model": "minimax/minimax-m3-20260531",
+  "report_status": "success",
+  "score": 1.0,
+  "tool_calls": 28,
+  "trace_id": "tr_fd1f59f76f87"
+}
+```
+
+The eval checks confirm 50+ registered tools, real model selections, 20+ tool calls, isolated subagents, structured subagent output, typed model patch planning, source patch application, failing-to-passing pytest validation, and a complete final report.
+
+## Offline Verification
+
+Automated tests and cheap local smoke checks can use the deterministic fake model explicitly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m patchpilot.cli eval --suite smoke --repo fixtures\buggy-python-repo --model-provider fake
+```
+
+The fake provider is a test double. Product and live eval commands should use `--model-provider openrouter`.
+
+## Docker And Wrapper Commands
+
+The PowerShell wrapper uses Docker Compose when available and falls back to the local `.venv`:
 
 ```powershell
 .\scripts\xarc-test.ps1
@@ -16,7 +119,7 @@ For agent and CI verification, prefer the canonical wrapper:
 .\scripts\xarc-test.ps1 -Target live-eval
 ```
 
-The wrapper uses Docker Compose when available and falls back to the local `.venv` with workspace-local temp paths. Direct Docker commands are also available:
+Direct Docker commands:
 
 ```bash
 docker compose run --rm xarc-test
@@ -25,42 +128,25 @@ docker compose run --rm --env-file .env xarc-live-eval
 docker compose run --rm xarc-shell
 ```
 
-```bash
-patchpilot tools list
-set OPENROUTER_API_KEY=...
-patchpilot run --repo fixtures/mock-store-python --goal "Fix the failing pytest test" --allow-exec --allow-write --model-provider openrouter --model z-ai/glm-4.7-flash
-patchpilot eval --suite smoke --repo fixtures/mock-store-python --live-eval
+## Fixtures
+
+- `fixtures/mock-store-python`: primary v1 demo repo. It contains a tiny ecommerce-style Python app where `apply_discount` subtracts the raw percent value instead of applying it as a percentage. The expected repair changes `mock_store/pricing.py`.
+- `fixtures/buggy-python-repo`: deterministic arithmetic repair fixture used by fake-provider tests.
+- `fixtures/buggy-validation-repo`: validation branch fixture.
+- `fixtures/buggy-parser-repo`: parser delimiter fixture with parametrized pytest failures.
+
+## Trace Inspection
+
+List tools:
+
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli tools list
 ```
 
-Offline tests and local deterministic demos can opt into the fake model explicitly:
+Show a trace:
 
-```bash
-patchpilot run --repo fixtures/buggy-python-repo --goal "repair failing pytest" --allow-exec --allow-write --model-provider fake
-patchpilot eval --suite smoke --repo fixtures/buggy-python-repo --model-provider fake
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli trace show tr_fd1f59f76f87 --trace-dir fixtures\mock-store-python\.patchpilot\traces
 ```
 
-`PATCHPILOT_MODEL`, `PATCHPILOT_BASE_URL`, `PATCHPILOT_MODEL_PROVIDER`, `PATCHPILOT_MAX_MODEL_CALLS`, and `PATCHPILOT_PROMPT_CACHE` can override model behavior. Traces record provider/model, model lifecycle events, token/cost/cache metadata when OpenRouter returns it, and typed failures when a model response is invalid.
-
-## What The Demo Proves
-
-- 50+ registered typed tools across filesystem, git, code, exec, memory/eval, and subagent namespaces.
-- Tool calls resolve through `ToolRegistry` and `ToolExecutor` with schema validation, permission gates, retries, rate limits, and JSONL traces.
-- The repair loop records `model.tool_selection` before execution and produces 20+ tool calls in one coherent session.
-- `subagent.spawn_diagnosis` and `subagent.spawn_review` run isolated scoped child contexts, expose child trace spans, and return structured diagnosis/review results.
-- Patch writes go through evidence, a typed patch plan, validation for repo containment/protected paths/diff size/test-only fixes, and `fs.apply_patch`.
-- Eval scoring reads persisted traces and final reports rather than private runtime objects.
-
-Trace files are written under `.patchpilot/traces` inside the repaired repository by default.
-
-## Fixture Set
-
-- `fixtures/mock-store-python`: primary v1 demo repo. A small ecommerce-style Python app with a discount bug repaired through the real OpenRouter/GLM path.
-- `fixtures/buggy-python-repo`: arithmetic source bug used by the deterministic smoke repair.
-- `fixtures/buggy-validation-repo`: inverted validation branch.
-- `fixtures/buggy-parser-repo`: parser delimiter bug with parametrized pytest failures.
-
-Each fixture keeps generated `.patchpilot`, `.pytest_cache`, and `__pycache__` artifacts out of copied eval workspaces.
-
-## Public Repo Hygiene
-
-Do not commit `.env`, generated `.patchpilot/` traces, local virtualenvs, pytest caches, or host-specific temp output. Curated demo traces or eval JSON should be reviewed for API keys and local paths before publication.
+Traces include `model.tool_selection`, `tool.started`, `tool.completed`, `subagent.started`, `subagent.completed`, `model.patch_plan`, `plan.updated`, `context.compacted`, and `run.completed` events.
