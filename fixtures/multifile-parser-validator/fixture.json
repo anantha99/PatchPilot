@@ -1,0 +1,12 @@
+{
+  "name": "multifile-parser-validator",
+  "suite": "v2-multifile",
+  "bug_shape": "parser and validator separator drift",
+  "goal": "Repair query parsing and validation so comma separated key-value pairs trim whitespace and reject blank keys.",
+  "test_command": "pytest",
+  "expected_changed_source_files": ["querytools/parser.py", "querytools/validator.py"],
+  "allowed_changed_files": ["querytools/parser.py", "querytools/validator.py"],
+  "minimum_changed_files": 2,
+  "expected_validation_commands": ["pytest tests/test_querytools.py", "pytest"],
+  "flagship": true
+}

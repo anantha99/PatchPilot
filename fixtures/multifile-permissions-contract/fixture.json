@@ -1,0 +1,12 @@
+{
+  "name": "multifile-permissions-contract",
+  "suite": "v2-multifile",
+  "bug_shape": "default role and permission checker drift",
+  "goal": "Repair default account role and read-permission checks around the member role contract.",
+  "test_command": "pytest",
+  "expected_changed_source_files": ["access/defaults.py", "access/permissions.py"],
+  "allowed_changed_files": ["access/defaults.py", "access/permissions.py"],
+  "minimum_changed_files": 2,
+  "expected_validation_commands": ["pytest tests/test_access.py", "pytest"],
+  "flagship": true
+}

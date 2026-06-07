@@ -1,0 +1,12 @@
+{
+  "name": "multifile-profile-contract",
+  "suite": "v2-multifile",
+  "bug_shape": "normalizer and validator contract drift",
+  "goal": "Repair email normalization and validation so profile creation accepts trimmed lowercase emails only.",
+  "test_command": "pytest",
+  "expected_changed_source_files": ["profiles/normalizer.py", "profiles/validators.py"],
+  "allowed_changed_files": ["profiles/normalizer.py", "profiles/validators.py"],
+  "minimum_changed_files": 2,
+  "expected_validation_commands": ["pytest tests/test_profiles.py", "pytest"],
+  "flagship": true
+}

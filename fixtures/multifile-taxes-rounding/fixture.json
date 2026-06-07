@@ -1,0 +1,12 @@
+{
+  "name": "multifile-taxes-rounding",
+  "suite": "v2-multifile",
+  "bug_shape": "tax constant and rounding behavior drift",
+  "goal": "Repair invoice tax rate and subtotal rounding behavior across tax policy and invoice calculation.",
+  "test_command": "pytest",
+  "expected_changed_source_files": ["billing/tax.py", "billing/invoice.py"],
+  "allowed_changed_files": ["billing/tax.py", "billing/invoice.py"],
+  "minimum_changed_files": 2,
+  "expected_validation_commands": ["pytest tests/test_billing.py", "pytest"],
+  "flagship": true
+}
