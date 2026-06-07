@@ -1,4 +1,4 @@
-"""Shared schema types."""
+"""Shared schema primitives for paths, permissions, tools, and text outputs."""
 
 from __future__ import annotations
 

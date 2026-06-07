@@ -1,3 +1,5 @@
+"""Execution-tool tests for permissions, risk policy, and command capture."""
+
 from pathlib import Path
 import asyncio
 
@@ -50,3 +52,34 @@ def test_command_arguments_cannot_downgrade_classified_risk(tmp_path: Path) -> N
                 context,
             )
         )
+
+
+def test_blind_eval_test_tool_rejects_parent_metadata_read(tmp_path: Path) -> None:
+    config = PatchPilotConfig(repo=tmp_path, allow_exec=True, blind_eval=True)
+    context = ToolContext(repo_root=tmp_path, config=config)
+
+    with pytest.raises(PolicyError):
+        asyncio.run(
+            ToolExecutor(build_registry()).execute(
+                "exec.run_tests",
+                {"command": r"cmd /c type ..\fixture.json"},
+                context,
+            )
+        )
+
+
+def test_blind_eval_test_tool_allows_pytest_targets(tmp_path: Path) -> None:
+    config = PatchPilotConfig(repo=tmp_path, allow_exec=True, blind_eval=True)
+    context = ToolContext(repo_root=tmp_path, config=config)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    result = asyncio.run(
+        ToolExecutor(build_registry()).execute(
+            "exec.run_targeted_tests",
+            {"command": "pytest tests/test_ok.py"},
+            context,
+        )
+    )
+
+    assert result.exit_code == 0

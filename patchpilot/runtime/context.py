@@ -1,4 +1,4 @@
-"""Context compaction utilities."""
+"""Context compaction utilities that preserve typed repair artifacts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from patchpilot.runtime.state import SessionState
 
 
 def compact_state(state: SessionState, keep_recent: int = 8) -> dict:
+    """Preserve typed artifacts while clipping bulky command/file output."""
     preserved = {}
     for item in state.tool_history:
         name = item.get("tool_name")

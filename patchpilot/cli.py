@@ -1,4 +1,4 @@
-"""PatchPilot command line interface."""
+"""PatchPilot CLI for repair runs, evals, tool listing, and trace inspection."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ def run(
     prompt_cache: bool = typer.Option(True, "--prompt-cache/--no-prompt-cache"),
     trace_dir: Path | None = typer.Option(None, "--trace-dir"),
 ) -> None:
+    """Run one repair session and print the persisted final report JSON."""
     config = PatchPilotConfig.from_env(
         repo=repo,
         model_provider=model_provider,
@@ -81,6 +82,7 @@ def eval(
     live_eval: bool = typer.Option(False, "--live-eval"),
     quiet: bool = typer.Option(False, "--quiet"),
 ) -> None:
+    """Run a named eval suite; live runs keep progress on stderr."""
     try:
         progress = None if quiet or not live_eval else _print_progress
         result = asyncio.run(run_suite(suite, repo, model_provider=model_provider, model_profile=model_profile, model=model, live_eval=live_eval, progress=progress))

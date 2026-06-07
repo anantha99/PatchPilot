@@ -1,4 +1,4 @@
-"""Python pytest adapter."""
+"""Python/pytest adapter for failure parsing and source-test mapping."""
 
 from __future__ import annotations
 

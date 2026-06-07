@@ -1,4 +1,4 @@
-"""Prompt-layer builders for model calls."""
+"""Prompt-layer builders that separate stable instructions from volatile run state."""
 
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+"""Session-tool tests for phase markers, artifacts, and trace assertions."""
+
 from pathlib import Path
 import asyncio
 
@@ -30,7 +32,7 @@ def test_session_tools_sanitize_runtime_artifacts(tmp_path: Path) -> None:
     assert output.artifacts["nested"]["value"] == 1
 
 
-def test_fixture_metadata_loader_is_not_registered_in_product_tools() -> None:
+def test_legacy_memory_eval_tools_are_not_registered() -> None:
     registry = build_registry()
 
     assert "memory_eval.load_fixture_metadata" not in {tool.name for tool in registry.list()}

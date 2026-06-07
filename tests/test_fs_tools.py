@@ -1,3 +1,5 @@
+"""Filesystem-tool tests for repo bounds and validated patch application."""
+
 from pathlib import Path
 import asyncio
 

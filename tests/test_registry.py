@@ -1,3 +1,5 @@
+"""Tool registry tests for namespace, schema, and metadata coherence."""
+
 from pydantic import BaseModel
 import pytest
 

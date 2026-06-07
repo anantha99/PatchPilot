@@ -1,4 +1,4 @@
-"""Shared helpers for local repo tools."""
+"""Shared path-safety and text-search helpers for local repo tools."""
 
 from __future__ import annotations
 

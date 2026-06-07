@@ -1,4 +1,4 @@
-"""Code inspection tools."""
+"""Code inspection and patch-plan validation tools."""
 
 from __future__ import annotations
 
@@ -223,6 +223,9 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def validate_patch_shape(input: PatchValidationInput, context: ToolContext) -> PatchValidationOutput:
+        # This read-only tool is the write gate for source fixes. It rejects
+        # unsafe paths, test edits, ambiguous structured edits, and weak
+        # multi-file rationale before fs.apply_patch receives anything.
         reasons: list[str] = []
         semantic_reasons: list[str] = []
         root = Path(context.repo_root)
@@ -274,6 +277,8 @@ def register(registry: ToolRegistry) -> None:
         edit_paths = _normalize_edit_paths(root, structured_edits, reasons)
         _validate_structured_edits(root, structured_edits, edit_paths, input, reasons, semantic_reasons)
         if structured_edits and normalized_patch_targets:
+            # Hybrid plans must agree: structured edits are used for precise
+            # writes, while the diff proves the same file-level intent.
             if set(edit_paths) != set(normalized_patch_targets):
                 reasons.append(
                     "structured edits and unified diff touch different files: "
@@ -297,6 +302,8 @@ def register(registry: ToolRegistry) -> None:
             missing_concrete_edits = sorted(path.as_posix() for path in set(normalized_targets) - changed_set)
             if missing_concrete_edits:
                 reasons.append(f"target file lacks concrete edit: {', '.join(missing_concrete_edits)}")
+        # Multi-file repairs need evidence and a shared root cause; otherwise a
+        # model can accidentally bundle unrelated changes into one patch.
         if changed_files and not evidence_refs:
             semantic_reasons.append("changed files require evidence_refs")
         if len(changed_files) > 1 and not root_cause.strip():

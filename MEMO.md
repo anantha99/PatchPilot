@@ -8,7 +8,7 @@ V2 adds blind multi-file working-set inference, structured search/replace patch 
 
 ## Cut
 
-Deep multi-language repair, hosted CI integration, PR creation, arbitrary dependency repair, and richer sandboxing are deferred. Fake model scripts remain only as direct test doubles so offline tests are cheap and repeatable; reviewer-facing product commands use OpenRouter/MiniMax against the v2 fixture suite.
+Deep multi-language repair, hosted CI integration, PR creation, arbitrary dependency repair, and richer sandboxing are deferred. Offline tests use mocked OpenRouter transports so they stay cheap and repeatable; reviewer-facing product commands use OpenRouter/MiniMax against the v2 fixture suite.
 
 ## More Time
 

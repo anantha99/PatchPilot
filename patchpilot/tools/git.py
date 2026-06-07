@@ -1,4 +1,4 @@
-"""Git tools."""
+"""Read-only Git tools used for diffs, history, and review evidence."""
 
 from __future__ import annotations
 

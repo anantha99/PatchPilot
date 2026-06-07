@@ -1,3 +1,5 @@
+"""CLI tests for command wiring, config precedence, and eval output shape."""
+
 from typer.testing import CliRunner
 
 from patchpilot.cli import app

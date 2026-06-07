@@ -1,3 +1,5 @@
+"""Tests for adapter-driven command detection and source/test mapping."""
+
 from pathlib import Path
 import subprocess
 import sys

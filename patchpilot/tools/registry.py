@@ -1,4 +1,4 @@
-"""Typed tool registry."""
+"""Typed tool registry that keeps 50+ tools coherent across namespaces."""
 
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+"""Subagent tests for scoped tools, structured outputs, and write isolation."""
+
 from pathlib import Path
 import asyncio
 

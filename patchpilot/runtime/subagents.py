@@ -1,4 +1,4 @@
-"""Isolated subagent runtime."""
+"""Scoped diagnosis and review subagent runtime."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ from patchpilot.tools.registry import ToolContext
 
 
 SUBAGENT_CONFIGS = {
+    # Subagents get read-only, task-specific tools so they can add judgment
+    # without bypassing the parent runtime's write gate.
     "diagnosis": SubagentConfig(
         kind="diagnosis",
         allowed_tools=[
@@ -72,6 +74,7 @@ class SubagentRuntime:
         parent_context: ToolContext,
         evidence: dict[str, Any],
     ) -> SubagentResultOutput:
+        """Run one bounded child loop and return structured output to the parent."""
         config = SUBAGENT_CONFIGS.get(kind)
         if config is None:
             raise SubagentError(f"Unknown subagent kind: {kind}")
@@ -88,6 +91,8 @@ class SubagentRuntime:
             },
             command_history=[],
         )
+        # Child spans share the trace ID but use a scoped session ID, making the
+        # parent/subagent boundary visible in JSONL traces.
         if parent_context.trace_store:
             await parent_context.trace_store.record(
                 trace_id=parent_context.trace_id,
@@ -105,11 +110,12 @@ class SubagentRuntime:
         if kind == "diagnosis":
             result = await self._run_diagnosis(config, task, evidence, scoped, child_context, tool_evidence)
         elif kind == "review":
-            if self.model is not None and getattr(self.model, "provider", "unknown") != "fake":
+            # Review may inspect the final diff and artifacts, but cannot write.
+            if self.model is not None:
                 await self._run_model_loop(config, task, evidence, scoped, child_context, tool_evidence)
             output = await ToolExecutor(scoped).execute("git.diff", {}, child_context)
             tool_evidence["diff_exit_code"] = output.exit_code
-            if self.model is not None and getattr(self.model, "provider", "unknown") != "fake":
+            if self.model is not None:
                 result = await self._structured_review(task, evidence, tool_evidence, child_context)
             else:
                 result = ReviewResult(
@@ -157,7 +163,7 @@ class SubagentRuntime:
             child_context,
         )
         tool_evidence["failure_locations"] = output.model_dump(mode="json")
-        if self.model is None or getattr(self.model, "provider", "unknown") == "fake":
+        if self.model is None:
             return _default_diagnosis(evidence, tool_evidence).model_dump(mode="json")
 
         attempt_failures = await self._run_model_loop(config, task, evidence, registry, child_context, tool_evidence)

@@ -1,3 +1,5 @@
+"""Model-client tests for OpenRouter contracts and provider metadata."""
+
 import asyncio
 
 import httpx
@@ -5,19 +7,8 @@ import pytest
 
 from patchpilot.config import DEFAULT_MODEL, DEFAULT_V2_MODEL, PatchPilotConfig, resolve_model_profile
 from patchpilot.errors import MissingModelApiKeyError, ModelSchemaError
-from patchpilot.models.fake import FakeModelClient
 from patchpilot.models.openrouter import OpenRouterModelClient
 from patchpilot.runtime.state import SessionState
-
-
-def test_fake_model_produces_structured_tool_selection(tmp_path) -> None:
-    model = FakeModelClient()
-    state = SessionState(repo=tmp_path, goal="repair")
-
-    selection = asyncio.run(model.select_tool(state, []))
-
-    assert selection.tool_name == "session.mark_phase"
-    assert selection.arguments["phase"] == "inspect"
 
 
 def test_openrouter_requires_api_key_before_network_call(tmp_path) -> None:
@@ -43,6 +34,11 @@ def test_model_profile_resolution_is_minimax_only(tmp_path, monkeypatch) -> None
     assert PatchPilotConfig.from_env(repo=tmp_path, model_profile="minimax").model == DEFAULT_V2_MODEL
     assert PatchPilotConfig.from_env(repo=tmp_path, model_profile="not-minimax").model == DEFAULT_V2_MODEL
     assert PatchPilotConfig.from_env(repo=tmp_path, model="custom/model").model == DEFAULT_V2_MODEL
+
+
+def test_config_rejects_non_openrouter_provider(tmp_path) -> None:
+    with pytest.raises(ValueError, match="openrouter"):
+        PatchPilotConfig(repo=tmp_path, model_provider="fake")
 
 
 def test_model_profile_reads_v2_model_from_env(tmp_path, monkeypatch) -> None:

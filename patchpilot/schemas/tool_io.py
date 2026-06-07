@@ -1,4 +1,4 @@
-"""Tool input and output schemas."""
+"""Typed tool I/O schemas, including PatchPlan and subagent contracts."""
 
 from __future__ import annotations
 
@@ -144,6 +144,7 @@ class FailureLocationsOutput(BaseModel):
 
 
 class PatchValidationInput(BaseModel):
+    """Inputs used to prove a patch is safe before the write tool runs."""
     task_classification: str
     target_files: list[Path]
     patch: str | None = None
@@ -157,6 +158,7 @@ class PatchValidationInput(BaseModel):
 
 
 class PatchValidationOutput(BaseModel):
+    """Validation result persisted into traces, attempts, and final reports."""
     valid: bool
     reasons: list[str] = Field(default_factory=list)
     target_files: list[Path] = Field(default_factory=list)
@@ -166,6 +168,7 @@ class PatchValidationOutput(BaseModel):
 
 
 class PatchEdit(BaseModel):
+    """A precise search/replace edit with evidence and root-cause linkage."""
     path: Path
     before: str
     after: str
@@ -176,6 +179,7 @@ class PatchEdit(BaseModel):
 
 
 class PatchPlan(BaseModel):
+    """Structured model output that must pass validation before any write."""
     task_classification: str
     root_cause: str
     evidence_refs: list[str] = Field(default_factory=list)
@@ -338,6 +342,7 @@ class SubagentConfig(BaseModel):
 
 
 class DiagnosisResult(BaseModel):
+    """Structured diagnosis returned by the scoped read-only subagent."""
     root_cause: str
     evidence: dict[str, Any] = Field(default_factory=dict)
     evidence_links: list[str] = Field(default_factory=list)
@@ -349,6 +354,7 @@ class DiagnosisResult(BaseModel):
 
 
 class ReviewResult(BaseModel):
+    """Structured review result used to approve or block a final patch."""
     approved: bool
     issues: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)

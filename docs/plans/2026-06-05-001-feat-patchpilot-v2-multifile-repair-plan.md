@@ -19,7 +19,7 @@ PatchPilot v2 should extend the existing v1 repair runtime into a stronger multi
 
 PatchPilot v1 already has the right skeleton for the X-ARC assignment: a phase-gated parent runtime, OpenRouter model calls, typed tool selection, scoped subagents, repository-bound filesystem tools, trace events, final reports, and smoke eval scoring. The current runtime is still shaped around one patch plan and one reported attempt. That is credible for a single-source demo, but it does not yet prove that PatchPilot can coordinate a repair across multiple source files, reject incoherent multi-file plans, or recover when the first validated patch fails tests.
 
-The v2 requirements make repair power the bar. The product claim should stay narrow enough to be defensible: generalized multi-file Python/pytest source bugs in small controlled fixture repos, run through the real OpenRouter path, with fake/scripted behavior reserved for tests. The plan therefore strengthens the existing runtime in place instead of starting a new agent shell or broadening into other languages, PR automation, CI hosting, or environment repair.
+The v2 requirements make repair power the bar. The product claim should stay narrow enough to be defensible: generalized multi-file Python/pytest source bugs in small controlled fixture repos, run through the real OpenRouter path, with mocked OpenRouter responses reserved for deterministic tests. The plan therefore strengthens the existing runtime in place instead of starting a new agent shell or broadening into other languages, PR automation, CI hosting, or environment repair.
 
 ---
 
@@ -36,7 +36,7 @@ The v2 requirements make repair power the bar. The product claim should stay nar
 **Model path and prompting**
 
 - R6. The v2 repair-power path uses the strongest configured OpenRouter model selected at implementation time, while MiniMax remains an explicitly supported configurable model option. Covers origin model-path requirements.
-- R7. Parent repair, diagnosis, patch planning, retry decisions, and review all use the same model-provider abstraction; fake model behavior remains offline test infrastructure only. Covers origin real-model and fake-test boundaries.
+- R7. Parent repair, diagnosis, patch planning, retry decisions, and review all use the OpenRouter model-provider abstraction; offline tests mock OpenRouter responses rather than using a separate offline model provider. Covers origin real-model and offline-test boundaries.
 - R8. Prompt construction separates stable system/tool/schema/phase layers from volatile run state, and records provider cache metadata whenever OpenRouter returns it. Covers origin context and prompt caching requirements.
 
 **Hybrid patch planning and semantic validation**
@@ -70,7 +70,7 @@ The v2 requirements make repair power the bar. The product claim should stay nar
 - **Keep review bounded and asymmetric:** Review should block or fail the run when it finds correctness, changed-file necessity, or regression-risk issues. Missing-validation concerns should be visible in reports and can produce failed or partial status, but review must not become an unbounded second repair loop.
 - **Use fixture metadata as post-run diagnostics:** Each v2 fixture should declare bug shape, command, expected source-only files, expected behavior, and acceptable failure category. Product scoring should stay behavior-first, while eval output compares runtime artifacts to fixture metadata after completion to report whether the intended multi-file contract was actually proven.
 - **Use hard fixtures, not checkbox fixtures:** The v2 suite should include cross-file contracts, stale re-exports, partial-fix traps, shared helper drift, and distracting nearby code so a one-file or superficial patch cannot count as a flagship success.
-- **Separate live proof from offline contracts:** Unit and integration tests should use fake or mocked providers to verify contracts deterministically. Live eval remains opt-in through OpenRouter credentials and budgets, and it is the only path used for the v2 repair-power claim.
+- **Separate live proof from offline contracts:** Unit and integration tests should use mocked OpenRouter responses to verify contracts deterministically. Live eval remains opt-in through OpenRouter credentials and budgets, and it is the only path used for the v2 repair-power claim.
 - **Make context packing artifact-aware instead of generic summarization:** Diagnosis, patch plans, validation results, attempts, changed files, review outputs, command history, and model metadata stay structured. Long stdout/stderr, file reads, and diffs can be summarized around the current working set.
 
 ---
@@ -132,19 +132,19 @@ The parent runtime remains responsible for phase order, budgets, permissions, an
 
 ### U1. Model Profile, Prompt Layers, and Provider Metadata
 
-- **Goal:** Make the v2 live model path configurable for the strongest OpenRouter model while keeping MiniMax M3 and fake providers available for the right purposes.
+- **Goal:** Make the v2 live model path configurable for the strongest OpenRouter model while keeping MiniMax M3 as the supported model family and mocked OpenRouter responses for offline tests.
 - **Files:** `patchpilot/config.py`, `patchpilot/cli.py`, `patchpilot/models/base.py`, `patchpilot/models/openrouter.py`, `patchpilot/runtime/graph.py`, `patchpilot/runtime/context.py`, `patchpilot/runtime/prompts.py`, `tests/test_model_clients.py`, `tests/test_cli.py`
 - **Patterns to follow:** `PatchPilotConfig.from_env` already centralizes provider defaults and OpenRouter settings. `OpenRouterModelClient.select_tool` and `complete_json` already extract model metadata and cache fields.
 - **Work:**
   - Add a named v2 model-profile concept that can resolve to the current strongest configured OpenRouter model without hardcoding v2 to MiniMax-only performance.
   - Preserve explicit MiniMax M3 selection through the existing model field and CLI/env overrides.
-  - Preserve fake provider usage for tests, but keep product/eval docs and defaults oriented around OpenRouter.
+  - Preserve deterministic offline tests through mocked OpenRouter responses, with product/eval docs and defaults oriented around OpenRouter.
   - Split prompt construction into stable layers and volatile run-state payloads so provider cache metadata can be interpreted consistently.
   - Ensure parent, patch-plan, retry, diagnosis, and review calls all record provider/model/usage/cache metadata when available.
 - **Test scenarios:**
   - `tests/test_model_clients.py` verifies model-profile resolution, explicit MiniMax M3 override, missing-key behavior, metadata extraction, and prompt-cache metadata extraction using mocked HTTP responses.
   - `tests/test_cli.py` verifies CLI/env precedence for provider, model, model profile, prompt cache, and live-eval options without making network calls.
-  - `tests/integration/test_fixture_repair.py` keeps fake/mocked model usage deterministic and clearly separated from live eval.
+  - `tests/integration/test_fixture_repair.py` keeps mocked OpenRouter usage deterministic and clearly separated from live eval.
 - **Requirement traceability:** R6, R7, R8, R17.
 
 ### U2. Multi-File Working Set and Artifact-Aware Context
@@ -261,7 +261,7 @@ The parent runtime remains responsible for phase order, budgets, permissions, an
   - Extend final reports with attempts, semantic validation outcomes, rejected plans, review result, retry summary, failure category, model usage/cost/cache summary, and trace/report file references.
   - Ensure traces record model calls, prompt-layer/cache metadata, patch-plan creation, patch-plan rejection, semantic validation, attempts, retry decisions, subagent child loops, review decisions, and final report.
   - Redact API keys and sensitive env-like values from traces and reports.
-  - Update README for v2 setup, model configuration, fake-vs-live distinction, fixture-suite commands, trace inspection, and public-repo hygiene.
+  - Update README for v2 setup, model configuration, mocked-offline-vs-live distinction, fixture-suite commands, trace inspection, and public-repo hygiene.
   - Update MEMO with what v2 proves, what remains cut, how to inspect traces, and one defended design decision.
 - **Test scenarios:**
   - `tests/test_trace_store.py` verifies sanitized failed and successful trace events remain JSON-serializable.
@@ -364,7 +364,7 @@ The riskiest shared contract is the patch-plan path. `PatchPlan`, validation out
 
 - `docs/brainstorms/2026-06-05-patchpilot-v2-multifile-repair-requirements.md` is the origin document for v2 scope, requirements, flows, acceptance examples, non-goals, and planning defaults.
 - `docs/plans/2026-06-04-001-feat-patchpilot-v1-real-model-repair-plan.md` documents the v1 real-model repair direction that v2 extends.
-- `patchpilot/runtime/graph.py` contains the current phase-gated parent repair loop, scaffolded phase continuation, patch-plan creation, validation gate, and final-report assembly.
+- `patchpilot/runtime/graph.py` contains the current phase-gated parent repair loop, workflow guardrail continuation, patch-plan creation, validation gate, and final-report assembly.
 - `patchpilot/runtime/state.py` and `patchpilot/runtime/context.py` contain the current state and compaction seams that should become attempt-aware and artifact-aware.
 - `patchpilot/schemas/tool_io.py` contains current `PatchPlan`, patch validation, subagent, and tool I/O schemas.
 - `patchpilot/tools/code.py` and `patchpilot/tools/fs.py` contain the current patch validation and repository-bound patch application tools.

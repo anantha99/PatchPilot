@@ -1,7 +1,0 @@
-{
-  "goal": "Repair comma pair parsing while preserving whitespace trimming.",
-  "test_command": "pytest",
-  "expected_changed_files": ["csv_tools/parser.py"],
-  "expected_passing_command": "pytest",
-  "expected_risk_notes": ["Parser fix should remain limited to delimiter handling."]
-}

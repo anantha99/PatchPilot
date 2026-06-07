@@ -26,6 +26,7 @@ class OpenRouterModelClient(ModelClient):
         self._limiter = AsyncLimiter(config.model_rate_limit_calls, config.model_rate_limit_period_seconds)
 
     async def select_tool(self, state, tools) -> ToolSelection:
+        """Ask the live provider for the next scoped tool call."""
         if not self.config.openrouter_api_key:
             raise MissingModelApiKeyError("OPENROUTER_API_KEY is required for live model runs")
         prompt = tool_selection_prompt(state, _compact_tools(tools))
@@ -69,6 +70,7 @@ class OpenRouterModelClient(ModelClient):
         schema_name: str,
         json_schema: dict[str, Any],
     ) -> ModelJsonResponse:
+        """Ask the live provider for schema-constrained JSON artifacts."""
         if not self.config.openrouter_api_key:
             raise MissingModelApiKeyError("OPENROUTER_API_KEY is required for live model runs")
         started = time.perf_counter()
@@ -109,6 +111,7 @@ class OpenRouterModelClient(ModelClient):
         return httpx.AsyncClient(base_url=self.config.base_url, timeout=30, transport=self._transport)
 
     def _request_body(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        """Build the OpenRouter request while keeping prompt-cache policy local."""
         stable = prompt.get("stable") or {}
         role = stable.get("role")
         if role == "structured-json":

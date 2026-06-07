@@ -1,11 +1,11 @@
-"""Runtime configuration."""
+"""Runtime configuration for provider, budget, permission, and trace policy."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 DEFAULT_V2_MODEL = "minimax/minimax-m3"
@@ -23,6 +23,8 @@ MODEL_PROFILES = {
 
 
 class PatchPilotConfig(BaseModel):
+    """Single source of truth for permissions, budgets, model, and trace paths."""
+
     repo: Path = Field(default_factory=Path.cwd)
     model_provider: str = DEFAULT_MODEL_PROVIDER
     openrouter_api_key: str | None = None
@@ -43,8 +45,16 @@ class PatchPilotConfig(BaseModel):
     model_rate_limit_period_seconds: int = 60
     enable_prompt_cache: bool = True
     live_eval: bool = False
+    blind_eval: bool = False
     max_diff_lines: int = 200
     command_timeout_seconds: int = 120
+
+    @field_validator("model_provider")
+    @classmethod
+    def validate_model_provider(cls, value: str) -> str:
+        if value != DEFAULT_MODEL_PROVIDER:
+            raise ValueError("PatchPilot only supports the openrouter model provider")
+        return value
 
     @classmethod
     def from_env(cls, repo: Path | None = None, **overrides: object) -> "PatchPilotConfig":
@@ -80,6 +90,7 @@ class PatchPilotConfig(BaseModel):
 
 
 def resolve_model_profile(profile: str, explicit_model: str | None = None, dotenv: dict[str, str] | None = None) -> str:
+    """Resolve model profiles while keeping v2 defaults constrained to MiniMax."""
     if explicit_model:
         return _resolve_minimax_model(explicit_model)
     dotenv = dotenv or {}

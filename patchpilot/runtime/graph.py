@@ -1,4 +1,4 @@
-"""Parent repair runtime."""
+"""Parent repair runtime for phase-scoped, model-selected repair loops."""
 
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ from patchpilot.tools.registry import ToolContext
 from patchpilot.tools.executor import ToolExecutor
 
 
+# The parent owns phase order so long runs stay coherent; the model still
+# chooses from the tools exposed inside each phase.
 PHASES = ["inspect", "reproduce", "diagnose", "plan_patch", "apply_patch", "validate", "review", "report"]
 PHASE_MARK_TOOL = "session.mark_phase"
-LEGACY_PHASE_MARK_TOOL = "memory_eval.mark_phase"
 PHASE_TOOLS = {
     "inspect": {
         PHASE_MARK_TOOL,
@@ -69,15 +70,6 @@ TOOL_ALIASES = {
     "code.read_test": "fs.read_file",
     "fs.glob_files": "fs.glob",
     "memory.mark_phase": PHASE_MARK_TOOL,
-    "memory_eval.mark_phase": PHASE_MARK_TOOL,
-    "memory_eval.record_observation": "session.record_observation",
-    "memory_eval.summarize_context": "session.summarize_context",
-    "memory_eval.retrieve_artifacts": "session.retrieve_artifacts",
-    "memory_eval.record_decision": "session.record_decision",
-    "memory_eval.store_artifact": "session.store_artifact",
-    "memory_eval.load_artifact": "session.load_artifact",
-    "memory_eval.assert_trace_properties": "session.assert_trace_properties",
-    "memory_eval.export_session": "session.export_session",
 }
 
 
@@ -120,6 +112,7 @@ class RepairRuntime:
         )
         from patchpilot.runtime.subagents import SubagentRuntime
 
+        # Subagents share the trace but receive scoped tool registries and context.
         context.artifacts["subagent_runtime"] = SubagentRuntime(model=self.model)
         await self.trace_store.record(trace_id=trace_id, session_id=session_id, event_type="run.started", name="patchpilot.run", payload={"goal": goal})
         self._progress(
@@ -183,7 +176,7 @@ class RepairRuntime:
                     payload=selection.model_dump(mode="json"),
                 )
                 if selection.finish or selection.tool_name is None:
-                    fallback = self._scaffolded_selection(state, context, reason="model_finished_before_report")
+                    fallback = self._workflow_guardrail_selection(state, context, reason="model_finished_before_report")
                     if fallback is None:
                         state.termination_reason = "model_finished"
                         break
@@ -191,10 +184,12 @@ class RepairRuntime:
                     await self.trace_store.record(
                         trace_id=trace_id,
                         session_id=session_id,
-                        event_type="runtime.scaffolded_tool_selection",
+                        event_type="runtime.workflow_guardrail_selection",
                         name=selection.tool_name or "finish",
                         payload=selection.model_dump(mode="json"),
                     )
+                # Normalize/fallback keeps legacy model outputs usable while preserving
+                # the phase-scoped tool contract visible in traces.
                 selection = await self._normalize_selection(selection, state, context)
                 selection.arguments = self._prepare_arguments(selection.tool_name, selection.arguments, context)
                 output = await self._phase_executor(state.phase).execute(selection.tool_name, selection.arguments, context)
@@ -308,6 +303,8 @@ class RepairRuntime:
         if not context.artifacts.get("applied_patches"):
             return False
         failure_category = "targeted_tests_failed" if tool_name == "exec.run_targeted_tests" else "full_tests_failed"
+        # Failed validation after a write becomes a first-class attempt artifact,
+        # not an untracked loop around pytest.
         attempt = self._build_attempt(
             state,
             context,
@@ -372,6 +369,7 @@ class RepairRuntime:
         data = output.model_dump(mode="json") if hasattr(output, "model_dump") else output
         if not isinstance(data, dict) or data.get("applied") is not False:
             return False
+        # Patch application failures preserve enough state for a bounded retry.
         attempt = self._build_attempt(
             state,
             context,
@@ -564,19 +562,19 @@ class RepairRuntime:
             raise PolicyError("fs.apply_patch requires valid patch validation before write")
         return {**arguments, "patch": patch, "structured_edits": structured_edits}
 
-    def _scaffolded_selection(self, state: SessionState, context: ToolContext, *, reason: str) -> ToolSelection | None:
+    def _workflow_guardrail_selection(self, state: SessionState, context: ToolContext, *, reason: str) -> ToolSelection | None:
         if state.phase == "report":
             return None
         if state.validation_status == "passed" and not self.config.allow_write:
             return None
-        next_tool = _next_phase_tool(state, context)
+        next_tool = _next_required_workflow_step(state, context)
         if next_tool is None:
             return None
         tool_name, arguments = next_tool
         return ToolSelection(
             tool_name=tool_name,
             arguments=arguments,
-            rationale=f"Runtime scaffold continued required phase workflow after {reason}.",
+            rationale=f"Runtime workflow guardrail continued required phase workflow after {reason}.",
         )
 
     async def _normalize_selection(self, selection: ToolSelection, state: SessionState, context: ToolContext) -> ToolSelection:
@@ -598,9 +596,8 @@ class RepairRuntime:
                 state.phase == "plan_patch"
                 and selection.tool_name == "session.store_artifact"
                 and selection.arguments.get("key") == "patch_plan"
-                and getattr(self.model, "provider", "unknown") != "fake"
             ):
-                return await self._scaffold_invalid_selection(
+                return await self._guardrail_invalid_selection(
                     selection,
                     state,
                     context,
@@ -611,16 +608,16 @@ class RepairRuntime:
                 and selection.tool_name == "code.validate_patch_shape"
                 and not context.artifacts.get("patch_plan")
             ):
-                return await self._scaffold_invalid_selection(
+                return await self._guardrail_invalid_selection(
                     selection,
                     state,
                     context,
                     reason="patch_validation_requires_typed_patch_plan",
                 )
             return selection
-        return await self._scaffold_invalid_selection(selection, state, context, reason=f"invalid_tool:{selection.tool_name}")
+        return await self._guardrail_invalid_selection(selection, state, context, reason=f"invalid_tool:{selection.tool_name}")
 
-    async def _scaffold_invalid_selection(
+    async def _guardrail_invalid_selection(
         self,
         selection: ToolSelection,
         state: SessionState,
@@ -628,13 +625,13 @@ class RepairRuntime:
         *,
         reason: str,
     ) -> ToolSelection:
-        fallback = self._scaffolded_selection(state, context, reason=reason)
+        fallback = self._workflow_guardrail_selection(state, context, reason=reason)
         if fallback is None:
             raise ToolError(f"Tool {selection.tool_name} is not available in phase {state.phase}")
         await self.trace_store.record(
             trace_id=state.trace_id,
             session_id=state.session_id,
-            event_type="runtime.scaffolded_tool_selection",
+            event_type="runtime.workflow_guardrail_selection",
             name=fallback.tool_name or "finish",
             payload=fallback.model_dump(mode="json"),
         )
@@ -650,13 +647,13 @@ class RepairRuntime:
     async def _maybe_create_patch_plan(self, state: SessionState, context: ToolContext) -> None:
         if state.phase != "plan_patch":
             return
-        if getattr(self.model, "provider", "unknown") == "fake":
-            return
         if context.artifacts.get("patch_plan"):
             return
         files = _read_files_from_history(state.tool_history)
         if not _has_patch_plan_evidence(files, context, state):
             return
+        # Patch planning is the write gate: the model returns typed JSON, then
+        # code.validate_patch_shape checks safety before fs.apply_patch can run.
         while state.model_calls < self.config.max_model_calls:
             response = await self.model.complete_json(
                 prompt={
@@ -855,10 +852,11 @@ def _latest_tool_output_after_marker(state: SessionState, tool_name: str, phase:
 
 
 def _is_phase_marker(item: dict[str, Any]) -> bool:
-    return item.get("tool_name") in {PHASE_MARK_TOOL, LEGACY_PHASE_MARK_TOOL}
+    return item.get("tool_name") == PHASE_MARK_TOOL
 
 
 def _update_working_set(state: SessionState, tool_name: str, output: Any) -> None:
+    """Fold tool outputs into the compact multi-file working set."""
     data = output.model_dump(mode="json") if hasattr(output, "model_dump") else output
     if not isinstance(data, dict):
         return
@@ -962,7 +960,7 @@ def _report_patch_plan(patch_plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _next_phase_tool(state: SessionState, context: ToolContext) -> tuple[str, dict[str, Any]] | None:
+def _next_required_workflow_step(state: SessionState, context: ToolContext) -> tuple[str, dict[str, Any]] | None:
     used = _used_since_phase_start(state)
     if state.phase == "inspect":
         for tool_name, arguments in [
@@ -995,7 +993,7 @@ def _next_phase_tool(state: SessionState, context: ToolContext) -> tuple[str, di
         return PHASE_MARK_TOOL, {"phase": "plan_patch"}
     if state.phase == "plan_patch":
         test_path = _first_test_path(state, context)
-        if "code.map_test_to_source" not in used:
+        if test_path and "code.map_test_to_source" not in used:
             return "code.map_test_to_source", {"path": test_path}
         source_path = _next_unread_source_path(state, context)
         if source_path and not _read_in_phase(state, source_path):
@@ -1068,7 +1066,7 @@ def _read_in_phase(state: SessionState, path: str) -> bool:
     return False
 
 
-def _first_test_path(state: SessionState, context: ToolContext) -> str:
+def _first_test_path(state: SessionState, context: ToolContext) -> str | None:
     for location in re.findall(r"([A-Za-z0-9_./\\-]*tests[\\/][A-Za-z0-9_./\\-]+\.py):\d+", state.last_command_output):
         return location.replace("\\", "/")
     for item in reversed(state.tool_history):
@@ -1080,7 +1078,7 @@ def _first_test_path(state: SessionState, context: ToolContext) -> str:
     if tests_dir.exists():
         for path in sorted(tests_dir.glob("test_*.py")):
             return path.relative_to(context.repo_root).as_posix()
-    return "tests/test_pricing.py"
+    return None
 
 
 def _source_candidate(state: SessionState, context: ToolContext) -> str | None:
@@ -1092,6 +1090,8 @@ def _source_candidate(state: SessionState, context: ToolContext) -> str | None:
             if path and not _is_test_path(path) and path.endswith(".py"):
                 return path
     test_path = _first_test_path(state, context)
+    if test_path is None:
+        return None
     stem = Path(test_path).stem.removeprefix("test_")
     for path in sorted(iter_repo_files(Path(context.repo_root))):
         if path.name != f"{stem}.py":

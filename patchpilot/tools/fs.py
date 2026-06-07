@@ -1,4 +1,4 @@
-"""Filesystem tools."""
+"""Repository-bound filesystem tools for safe reads and validated patch writes."""
 
 from __future__ import annotations
 

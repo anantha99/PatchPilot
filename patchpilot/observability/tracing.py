@@ -1,4 +1,4 @@
-"""JSONL trace storage."""
+"""JSONL trace storage for model, tool, subagent, and report events."""
 
 from __future__ import annotations
 

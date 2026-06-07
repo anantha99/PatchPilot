@@ -1,4 +1,4 @@
-"""Report and runtime state schemas."""
+"""Final report and trace schemas that make repair runs auditable."""
 
 from __future__ import annotations
 

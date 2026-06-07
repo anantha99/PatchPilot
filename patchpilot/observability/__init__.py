@@ -1,2 +1,1 @@
-"""Observability utilities."""
-
+"""Observability utilities for persisted reviewer artifacts."""

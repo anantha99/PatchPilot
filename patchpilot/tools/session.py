@@ -1,4 +1,4 @@
-"""In-session product artifact tools."""
+"""In-session artifact tools for observations, decisions, phases, and exports."""
 
 from __future__ import annotations
 

@@ -1,10 +1,13 @@
+"""Fixture-suite tests that keep v2 multi-file bugs behaviorally meaningful."""
+
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from patchpilot.evals.harness import load_fixture_metadata
 
 
 ROOT = Path(__file__).parents[1]
@@ -120,11 +123,12 @@ DIRECT_TEST_MARKERS: dict[tuple[str, str], list[str]] = {
 
 def test_multifile_fixture_expected_files_have_direct_behavioral_tests() -> None:
     for fixture in sorted(FULL_FIXES):
-        metadata = json.loads((FIXTURES / fixture / "fixture.json").read_text(encoding="utf-8"))
+        metadata = load_fixture_metadata(FIXTURES / fixture)
         test_text = "\n".join(path.read_text(encoding="utf-8") for path in (FIXTURES / fixture / "tests").glob("test_*.py"))
-        for source_file in metadata["expected_changed_source_files"]:
-            assert "tests/" not in source_file
-            markers = DIRECT_TEST_MARKERS[(fixture, source_file)]
+        for source_file in metadata.expected_changed_source_files:
+            source = source_file.as_posix()
+            assert "tests/" not in source
+            markers = DIRECT_TEST_MARKERS[(fixture, source)]
             assert any(marker in test_text for marker in markers), f"{fixture} lacks direct test marker for {source_file}"
 
 

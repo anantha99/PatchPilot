@@ -22,6 +22,7 @@ class ModelCacheMetadata(BaseModel):
 
 
 class ModelCallMetadata(BaseModel):
+    """Provider metadata recorded so reports can show model usage and cost."""
     provider: str
     model: str
     provider_request_id: str | None = None
@@ -38,6 +39,7 @@ class ModelJsonResponse(BaseModel):
 
 
 class ToolSelection(BaseModel):
+    """One model-selected tool call inside the current phase-scoped registry."""
     tool_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
@@ -46,6 +48,7 @@ class ToolSelection(BaseModel):
 
 
 class ModelClient:
+    """Provider interface used by the parent runtime and subagents."""
     provider: str = "unknown"
 
     async def select_tool(self, state: Any, tools: list[dict[str, Any]]) -> ToolSelection:

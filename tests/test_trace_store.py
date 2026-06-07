@@ -1,3 +1,5 @@
+"""Trace-store tests for JSONL persistence and secret redaction."""
+
 import asyncio
 
 from patchpilot.observability.tracing import TraceStore

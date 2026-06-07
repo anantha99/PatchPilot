@@ -1,18 +1,19 @@
-"""Smoke and multi-file eval harnesses."""
+"""Smoke and multi-file eval harnesses with blind runtime work copies."""
 
 from __future__ import annotations
 
 import shutil
 import time
+import json
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from patchpilot.config import PatchPilotConfig
 from patchpilot.evals.checks import ordered_phases, trace_tool_checks
-from patchpilot.models.fake import FakeModelClient
 from patchpilot.models.openrouter import OpenRouterModelClient
 from patchpilot.runtime.graph import PHASES, RepairRuntime
 from patchpilot.tools import build_registry
@@ -34,19 +35,36 @@ COPY_IGNORE_PATTERNS = (
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
+GENERIC_REPAIR_GOAL = "Repair the failing pytest suite. Diagnose from tests and source. Apply the smallest source-only fix. Do not edit tests or use fixture metadata."
+MANIFEST_PATH = Path(__file__).parent / "manifests" / "suites.json"
+ORACLE_FILE_NAMES = {"fixture.json", "suites.json"}
+ORACLE_TEXT_MARKERS = (
+    "fixture.json",
+    "suites.json",
+    "expected_changed_files",
+    "expected_changed_source_files",
+    "allowed_changed_files",
+    "minimum_changed_files",
+    "expected_validation_commands",
+    "patchpilot/evals/manifests",
+    "patchpilot\\evals\\manifests",
+)
+
 
 class FixtureMetadata(BaseModel):
+    """Post-run fixture oracle metadata; never copied into runtime work repos."""
     name: str
     suite: str = "v2-multifile"
-    bug_shape: str
-    goal: str
+    repo_path: Path = Path(".")
+    bug_shape: str = ""
     test_command: str = "pytest"
-    expected_changed_source_files: list[Path]
+    expected_changed_source_files: list[Path] = Field(default_factory=list)
     allowed_changed_files: list[Path] = Field(default_factory=list)
     minimum_changed_files: int = 1
     expected_validation_commands: list[str] = Field(default_factory=list)
     expected_failure_category: str | None = None
     flagship: bool = False
+    labels: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_changed_file_contract(self) -> "FixtureMetadata":
@@ -60,7 +78,12 @@ class FixtureMetadata(BaseModel):
         return self
 
 
+class EvalSuiteManifest(BaseModel):
+    fixtures: list[FixtureMetadata]
+
+
 def score_trace(events: list[Any], report: Any, registry_count: int) -> dict[str, Any]:
+    """Score assignment proof from persisted traces and final reports."""
     completed = [event for event in events if event.event_type == "tool.completed"]
     started = [event for event in events if event.event_type == "tool.started"]
     selections = [event for event in events if event.event_type == "model.tool_selection"]
@@ -101,78 +124,166 @@ async def run_smoke_eval(
     model: str | None = None,
     live_eval: bool = False,
     progress: ProgressCallback | None = None,
+    model_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Any]:
-    work_repo = repo / ".patchpilot" / "eval-work" / uuid4().hex[:8] / "repo"
-    shutil.copytree(repo, work_repo, ignore=shutil.ignore_patterns(*COPY_IGNORE_PATTERNS))
+    """Run the small eval path through the same OpenRouter runtime contract."""
+    _require_openrouter_provider(model_provider)
+    metadata = find_fixture_metadata(repo, suite="smoke")
+    fixture_name = metadata.name if metadata else repo.name
+    test_command = metadata.test_command if metadata else "pytest"
+    work_root, work_repo = _copy_fixture_to_work_repo(repo, "smoke", fixture_name)
     config = PatchPilotConfig.from_env(
         repo=work_repo,
-        trace_dir=repo / ".patchpilot" / "traces",
+        trace_dir=work_root / "traces",
         allow_write=True,
         allow_exec=True,
+        blind_eval=True,
         model_provider=model_provider,
         **({"model_profile": model_profile} if model_profile else {}),
         **({"model": model} if model else {}),
         live_eval=live_eval,
     )
-    if model_provider == "fake":
-        model = FakeModelClient()
-    else:
-        if not config.openrouter_api_key:
-            return {
-                "passed": False,
-                "score": 0.0,
-                "checks": {"openrouter_api_key_present": False},
-                "failure_reasons": ["OPENROUTER_API_KEY is required for smoke eval with --model-provider openrouter"],
-                "provider": "openrouter",
-                "model": config.model,
-            }
-        model = OpenRouterModelClient(config)
-    runtime = RepairRuntime(config, model, progress=progress)
-    report = await runtime.run("repair failing pytest fixture", test_command="pytest")
+    if not config.openrouter_api_key:
+        return {
+            "passed": False,
+            "score": 0.0,
+            "checks": {"openrouter_api_key_present": False},
+            "failure_reasons": ["OPENROUTER_API_KEY is required for smoke eval with --model-provider openrouter"],
+            "provider": "openrouter",
+            "model": config.model,
+            "runtime_oracle_visible": False,
+        }
+    model_client = OpenRouterModelClient(config, transport=model_transport)
+    runtime = RepairRuntime(config, model_client, progress=progress)
+    report = await runtime.run(GENERIC_REPAIR_GOAL, test_command=test_command)
     events = runtime.trace_store.read(report.trace_id)
+    blind_audit = audit_runtime_oracle_visibility(events, report)
     result = score_trace(events, report, len(build_registry().list()))
+    result["checks"]["runtime_oracle_hidden"] = not blind_audit["runtime_oracle_visible"]
+    if blind_audit["runtime_oracle_visible"]:
+        result["passed"] = False
+        result["failure_reasons"] = ["runtime oracle metadata was visible"]
     return result | {
         "provider": report.model_provider,
         "model": report.model,
         "report": report.model_dump(mode="json"),
         "cost": report.estimated_cost,
+        "runtime_oracle_visible": blind_audit["runtime_oracle_visible"],
+        "blind_audit": blind_audit,
+        "work_repo": str(work_repo),
     }
 
 
 def load_fixture_metadata(fixture_dir: Path) -> FixtureMetadata:
-    import json
+    metadata = find_fixture_metadata(fixture_dir)
+    if metadata is None:
+        raise FileNotFoundError(f"No eval manifest entry for fixture: {fixture_dir}")
+    return metadata
 
-    path = fixture_dir / "fixture.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data.setdefault("name", fixture_dir.name)
-    return FixtureMetadata.model_validate(data)
+
+def load_eval_manifest(path: Path = MANIFEST_PATH) -> EvalSuiteManifest:
+    return EvalSuiteManifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def iter_manifest_fixtures(*, suite: str | None = None) -> list[FixtureMetadata]:
+    fixtures = load_eval_manifest().fixtures
+    if suite is None:
+        return fixtures
+    return [fixture for fixture in fixtures if fixture.suite == suite]
+
+
+def find_fixture_metadata(fixture_dir: Path, *, suite: str | None = None) -> FixtureMetadata | None:
+    fixture_dir = fixture_dir.resolve()
+    for metadata in iter_manifest_fixtures(suite=suite):
+        if _resolve_fixture_repo(metadata) == fixture_dir:
+            return metadata
+    return None
+
+
+def discover_multifile_fixture_metadata(root: Path) -> list[FixtureMetadata]:
+    root = root.resolve()
+    fixtures: list[FixtureMetadata] = []
+    for metadata in iter_manifest_fixtures(suite="v2-multifile"):
+        repo = _resolve_fixture_repo(metadata)
+        if repo == root or _is_relative_to(repo, root):
+            fixtures.append(metadata)
+    return sorted(fixtures, key=lambda item: item.name)
 
 
 def discover_multifile_fixtures(root: Path) -> list[Path]:
-    if (root / "fixture.json").exists():
-        data = _read_fixture_json(root)
-        if data.get("suite") != "v2-multifile":
-            return []
-        load_fixture_metadata(root)
-        return [root]
-    fixtures: list[Path] = []
-    for path in sorted(root.iterdir()):
-        if not path.is_dir() or not (path / "fixture.json").exists():
-            continue
-        data = _read_fixture_json(path)
-        if data.get("suite") == "v2-multifile":
-            load_fixture_metadata(path)
-            fixtures.append(path)
-    return fixtures
+    return [_resolve_fixture_repo(metadata) for metadata in discover_multifile_fixture_metadata(root)]
 
 
-def _read_fixture_json(fixture_dir: Path) -> dict[str, Any]:
-    import json
-
-    return json.loads((fixture_dir / "fixture.json").read_text(encoding="utf-8"))
+def _workspace_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
-def score_fixture_report(report: Any, metadata: FixtureMetadata, trace_score: dict[str, Any] | None = None) -> dict[str, Any]:
+def _resolve_fixture_repo(metadata: FixtureMetadata) -> Path:
+    path = metadata.repo_path
+    if path.is_absolute():
+        return path.resolve()
+    return (_workspace_root() / path).resolve()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _eval_work_root() -> Path:
+    return _workspace_root() / "tmp" / "patchpilot-eval-work"
+
+
+def _copy_fixture_to_work_repo(source_repo: Path, suite: str, fixture_name: str) -> tuple[Path, Path]:
+    """Copy a fixture without oracle files so runtime behavior stays blind."""
+    safe_name = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in fixture_name)
+    work_root = _eval_work_root() / suite / safe_name / uuid4().hex[:8]
+    work_repo = work_root / "repo"
+    shutil.copytree(source_repo, work_repo, ignore=shutil.ignore_patterns(*COPY_IGNORE_PATTERNS))
+    violations = _blind_work_repo_violations(work_repo)
+    if violations:
+        raise RuntimeError("Eval work repo is not blind: " + "; ".join(violations))
+    return work_root, work_repo
+
+
+def _blind_work_repo_violations(work_repo: Path) -> list[str]:
+    resolved = work_repo.resolve()
+    violations: list[str] = []
+    if "fixtures" in resolved.parts:
+        violations.append(f"work repo is under fixture ancestry: {resolved}")
+    for path in resolved.rglob("*"):
+        if path.is_file() and path.name.lower() in ORACLE_FILE_NAMES:
+            violations.append(f"oracle file copied into work repo: {path.relative_to(resolved)}")
+    return violations
+
+
+def audit_runtime_oracle_visibility(events: list[Any], report: Any) -> dict[str, Any]:
+    """Detect answer-key leakage in prompts, traces, reports, or work paths."""
+    violations: list[dict[str, str]] = []
+    scanned_items = [(f"trace:{index}:{event.event_type}:{event.name}", event.model_dump(mode="json")) for index, event in enumerate(events)]
+    scanned_items.append(("report", report.model_dump(mode="json") if hasattr(report, "model_dump") else report))
+    for location, payload in scanned_items:
+        text = json.dumps(payload, default=str).lower()
+        for marker in ORACLE_TEXT_MARKERS:
+            if marker.lower() in text:
+                violations.append({"location": location, "marker": marker})
+    return {
+        "runtime_oracle_visible": bool(violations),
+        "violations": violations,
+    }
+
+
+def score_fixture_report(
+    report: Any,
+    metadata: FixtureMetadata,
+    trace_score: dict[str, Any] | None = None,
+    *,
+    runtime_oracle_visible: bool = False,
+) -> dict[str, Any]:
+    """Score product behavior first, then report oracle contract diagnostics."""
     changed = {item.path.as_posix() for item in report.changed_files}
     expected = {path.as_posix() for path in metadata.expected_changed_source_files}
     allowed = expected | {path.as_posix() for path in metadata.allowed_changed_files}
@@ -185,6 +296,7 @@ def score_fixture_report(report: Any, metadata: FixtureMetadata, trace_score: di
         "semantic_validation_visible": bool(getattr(report, "semantic_validation", [])),
         "review_not_rejected": review_result.get("approved") is not False and review_result.get("blocking") is not True,
         "final_report_complete": bool(report.trace_id and tests and report.attempts and report.changed_files),
+        "runtime_oracle_hidden": not runtime_oracle_visible,
     }
     product_pass = all(product_checks.values())
     oracle_diagnostics = _oracle_diagnostics(changed, metadata, allowed)
@@ -209,15 +321,18 @@ async def run_multifile_eval(
     model: str | None = None,
     live_eval: bool = False,
     progress: ProgressCallback | None = None,
+    model_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, Any]:
-    fixtures = discover_multifile_fixtures(root)
+    """Run every v2 fixture in a disposable blind workspace."""
+    _require_openrouter_provider(model_provider)
+    fixtures = discover_multifile_fixture_metadata(root)
     if not fixtures:
         return {"suite": "v2-multifile", "passed": False, "pass_rate": 0.0, "results": [], "failure_reasons": ["no v2 multifile fixtures found"]}
     _emit_progress(progress, event="suite_started", suite="v2-multifile", fixture_count=len(fixtures), root=str(root))
     results: list[dict[str, Any]] = []
     suite_started_at = time.monotonic()
-    for index, fixture in enumerate(fixtures, 1):
-        metadata = load_fixture_metadata(fixture)
+    for index, metadata in enumerate(fixtures, 1):
+        fixture = _resolve_fixture_repo(metadata)
         fixture_started_at = time.monotonic()
         _emit_progress(progress, event="fixture_started", fixture=metadata.name, index=index, fixture_count=len(fixtures), bug_shape=metadata.bug_shape)
         config_probe = PatchPilotConfig.from_env(
@@ -249,19 +364,19 @@ async def run_multifile_eval(
                 }
             )
             continue
-        work_repo = fixture / ".patchpilot" / "eval-work" / uuid4().hex[:8] / "repo"
-        shutil.copytree(fixture, work_repo, ignore=shutil.ignore_patterns(*COPY_IGNORE_PATTERNS))
+        work_root, work_repo = _copy_fixture_to_work_repo(fixture, "v2-multifile", metadata.name)
         config = PatchPilotConfig.from_env(
             repo=work_repo,
-            trace_dir=fixture / ".patchpilot" / "traces",
+            trace_dir=work_root / "traces",
             allow_write=True,
             allow_exec=True,
+            blind_eval=True,
             model_provider=model_provider,
             **({"model_profile": model_profile} if model_profile else {}),
             **({"model": model} if model else {}),
             live_eval=live_eval,
         )
-        runtime_model = FakeModelClient() if model_provider == "fake" else OpenRouterModelClient(config)
+        runtime_model = OpenRouterModelClient(config, transport=model_transport)
         last_runtime_event: dict[str, Any] = {}
 
         def runtime_progress(payload: dict[str, Any]) -> None:
@@ -270,10 +385,11 @@ async def run_multifile_eval(
             _emit_progress(progress, fixture=metadata.name, **payload)
 
         runtime = RepairRuntime(config, runtime_model, progress=runtime_progress)
-        report = await _run_with_heartbeat(runtime, metadata.goal, metadata.test_command, progress, metadata.name, fixture_started_at, lambda: last_runtime_event)
+        report = await _run_with_heartbeat(runtime, GENERIC_REPAIR_GOAL, metadata.test_command, progress, metadata.name, fixture_started_at, lambda: last_runtime_event)
         events = runtime.trace_store.read(report.trace_id)
+        blind_audit = audit_runtime_oracle_visibility(events, report)
         trace_score = score_trace(events, report, len(build_registry().list()))
-        fixture_score = score_fixture_report(report, metadata, trace_score)
+        fixture_score = score_fixture_report(report, metadata, trace_score, runtime_oracle_visible=blind_audit["runtime_oracle_visible"])
         failure_category = None if fixture_score["passed"] else _categorize_report_failure(report, fixture_score)
         _emit_progress(
             progress,
@@ -306,7 +422,9 @@ async def run_multifile_eval(
                 "product_checks": fixture_score["product_checks"],
                 "multi_file_contract": fixture_score["multi_file_contract"],
                 "oracle_diagnostics": fixture_score["oracle_diagnostics"],
-                "runtime_oracle_visible": False,
+                "runtime_oracle_visible": blind_audit["runtime_oracle_visible"],
+                "blind_audit": blind_audit,
+                "work_repo": str(work_repo),
                 "root_cause": report.root_cause,
                 "tests_run": [test.model_dump(mode="json") for test in report.tests_run],
                 "rejected_patch_plan_count": len(report.rejected_patch_plans),
@@ -320,9 +438,10 @@ async def run_multifile_eval(
     pass_rate = passed_count / len(results) if results else 0.0
     contract_count = sum(1 for result in results if (result.get("multi_file_contract") or {}).get("contract_matched"))
     contract_rate = contract_count / len(results) if results else 0.0
+    runtime_oracle_visible = any(result.get("runtime_oracle_visible") for result in results)
     output = {
         "suite": "v2-multifile",
-        "passed": pass_rate >= 0.9,
+        "passed": pass_rate >= 0.9 and not runtime_oracle_visible,
         "pass_rate": pass_rate,
         "product_pass_rate": pass_rate,
         "multi_file_contract_match_rate": contract_rate,
@@ -332,11 +451,11 @@ async def run_multifile_eval(
         "multi_file_contract_matched_count": contract_count,
         "provider": model_provider,
         "model": model or model_profile,
-        "runtime_oracle_visible": False,
+        "runtime_oracle_visible": runtime_oracle_visible,
         "results": results,
     }
     if live_eval:
-        output["markdown_report_path"] = str(_write_markdown_eval_report(root, output))
+        output["markdown_report_path"] = str(_write_markdown_eval_report("v2-multifile", output))
     _emit_progress(
         progress,
         event="suite_completed",
@@ -390,13 +509,21 @@ def _emit_progress(progress: ProgressCallback | None, **payload: Any) -> None:
     progress(payload)
 
 
+def _require_openrouter_provider(model_provider: str) -> None:
+    if model_provider != "openrouter":
+        raise ValueError("PatchPilot eval only supports --model-provider openrouter")
+
+
 def _categorize_report_failure(report: Any, fixture_score: dict[str, Any]) -> str:
+    """Map failed reports to stable eval categories for reviewer triage."""
     if report.failure_reason:
         reason = str(report.failure_reason)
         if "api" in reason.lower():
             return "provider_failure"
         return reason
     checks = fixture_score.get("product_checks", fixture_score.get("checks", {}))
+    if not checks.get("runtime_oracle_hidden", True):
+        return "runtime_oracle_visible"
     if not checks.get("source_only_changed_files", True):
         return "unsafe_patch"
     if not checks.get("final_tests_passed", True) or (report.tests_run and report.tests_run[-1].status == "failed"):
@@ -432,6 +559,7 @@ def _oracle_diagnostics(changed: set[str], metadata: FixtureMetadata, allowed: s
 
 
 def _multi_file_contract(changed: set[str], metadata: FixtureMetadata, product_pass: bool, oracle_diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """Explain whether a passing repair also proved the intended file contract."""
     required = sorted(path.as_posix() for path in metadata.expected_changed_source_files)
     actual = sorted(changed)
     matched = bool(oracle_diagnostics["expected_files_changed"] and oracle_diagnostics["minimum_changed_files"])
@@ -451,8 +579,8 @@ def _multi_file_contract(changed: set[str], metadata: FixtureMetadata, product_p
     }
 
 
-def _write_markdown_eval_report(root: Path, result: dict[str, Any]) -> Path:
-    report_dir = root / ".patchpilot" / "reports"
+def _write_markdown_eval_report(suite: str, result: dict[str, Any]) -> Path:
+    report_dir = _eval_work_root() / suite / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / "report.md"
     lines = [

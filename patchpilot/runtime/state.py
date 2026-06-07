@@ -1,4 +1,4 @@
-"""Repair runtime state."""
+"""Typed runtime state shared across phases, retries, and reports."""
 
 from __future__ import annotations
 

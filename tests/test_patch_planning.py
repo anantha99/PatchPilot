@@ -1,8 +1,10 @@
+"""Patch-plan tests for hybrid validation and semantic write gates."""
+
 from pathlib import Path
 import asyncio
 
 from patchpilot.config import PatchPilotConfig
-from patchpilot.runtime.graph import _has_patch_plan_evidence, _next_unread_source_path
+from patchpilot.runtime.graph import _has_patch_plan_evidence, _next_required_workflow_step, _next_unread_source_path
 from patchpilot.runtime.state import SessionState
 from patchpilot.tools import build_registry
 from patchpilot.tools.executor import ToolExecutor
@@ -245,3 +247,11 @@ def test_patch_planning_waits_for_all_implicated_source_files(tmp_path: Path) ->
     files.append({"path": "calendar_rules/constants.py", "content": "WEEKEND = {5}\n"})
 
     assert _has_patch_plan_evidence(files, context, state) is True
+
+
+def test_workflow_guardrail_does_not_fabricate_demo_test_path(tmp_path: Path) -> None:
+    context = ToolContext(repo_root=tmp_path, config=PatchPilotConfig(repo=tmp_path))
+    state = SessionState(repo=tmp_path, goal="repair")
+    state.phase = "plan_patch"
+
+    assert _next_required_workflow_step(state, context) is None
