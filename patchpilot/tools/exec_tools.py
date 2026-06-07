@@ -42,11 +42,20 @@ async def _run(input: RunCommandInput, context: ToolContext) -> CommandOutput:
 
 
 def _normalize_command(command: str) -> str:
+    pytest_capture_arg = _pytest_capture_arg(command)
     if command == "pytest":
-        return f'"{sys.executable}" -m pytest'
+        return f'"{sys.executable}" -m pytest{pytest_capture_arg}'
     if command.startswith("pytest "):
-        return f'"{sys.executable}" -m pytest {command.removeprefix("pytest ")}'
+        return f'"{sys.executable}" -m pytest{pytest_capture_arg} {command.removeprefix("pytest ")}'
     return command
+
+
+def _pytest_capture_arg(command: str) -> str:
+    if os.environ.get("PATCHPILOT_PYTEST_NO_CAPTURE", "").lower() not in {"1", "true", "yes"}:
+        return ""
+    if "-s" in command.split() or "--capture=" in command or "--capture " in command:
+        return ""
+    return " --capture=no"
 
 
 def _risk_level(risk: CommandRisk) -> int:

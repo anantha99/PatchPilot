@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import json
 import shutil
 import sys
 
@@ -102,7 +103,7 @@ class MockStoreModel(ModelClient):
                     "task_classification": "source_fix",
                     "root_cause": "apply_discount subtracts percent points from price instead of computing a percentage discount",
                     "evidence_refs": ["tests/test_pricing.py", "mock_store/pricing.py"],
-                    "expected_changed_files": ["mock_store/pricing.py"],
+                    "planned_changed_files": ["mock_store/pricing.py"],
                     "edits": [
                         {
                             "path": "mock_store/pricing.py",
@@ -183,6 +184,8 @@ def test_fixture_repair_produces_success_report(tmp_path: Path) -> None:
 
     assert report.status == "success"
     assert report.trace_id
+    assert report.report_path
+    assert json.loads(Path(report.report_path).read_text(encoding="utf-8"))["report_path"] == report.report_path
     assert report.subagents
     assert (repo / "buggy_math" / "calculator.py").read_text(encoding="utf-8").strip().endswith("return a + b")
 

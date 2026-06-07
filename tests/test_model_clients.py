@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from patchpilot.config import DEFAULT_MODEL, PatchPilotConfig
+from patchpilot.config import DEFAULT_MODEL, DEFAULT_V2_MODEL, PatchPilotConfig, resolve_model_profile
 from patchpilot.errors import MissingModelApiKeyError, ModelSchemaError
 from patchpilot.models.fake import FakeModelClient
 from patchpilot.models.openrouter import OpenRouterModelClient
@@ -16,7 +16,7 @@ def test_fake_model_produces_structured_tool_selection(tmp_path) -> None:
 
     selection = asyncio.run(model.select_tool(state, []))
 
-    assert selection.tool_name == "memory_eval.mark_phase"
+    assert selection.tool_name == "session.mark_phase"
     assert selection.arguments["phase"] == "inspect"
 
 
@@ -26,6 +26,43 @@ def test_openrouter_requires_api_key_before_network_call(tmp_path) -> None:
 
     with pytest.raises(MissingModelApiKeyError):
         asyncio.run(model.select_tool(SessionState(repo=tmp_path, goal="repair"), []))
+
+
+def test_model_profile_resolution_is_minimax_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PATCHPILOT_MODEL", raising=False)
+    monkeypatch.delenv("PATCHPILOT_MODEL_PROFILE", raising=False)
+    monkeypatch.delenv("PATCHPILOT_V2_MODEL", raising=False)
+
+    config = PatchPilotConfig.from_env(repo=tmp_path)
+
+    assert DEFAULT_MODEL == DEFAULT_V2_MODEL
+    assert config.model_profile == "v2-strong"
+    assert config.model == "minimax/minimax-m3"
+    assert resolve_model_profile("minimax") == DEFAULT_V2_MODEL
+    assert PatchPilotConfig.from_env(repo=tmp_path, model_profile="minimax").model == DEFAULT_V2_MODEL
+    assert PatchPilotConfig.from_env(repo=tmp_path, model_profile="not-minimax").model == DEFAULT_V2_MODEL
+    assert PatchPilotConfig.from_env(repo=tmp_path, model="custom/model").model == DEFAULT_V2_MODEL
+
+
+def test_model_profile_reads_v2_model_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PATCHPILOT_MODEL", raising=False)
+    monkeypatch.setenv("PATCHPILOT_V2_MODEL", "minimax/minimax-m3-20260531")
+
+    config = PatchPilotConfig.from_env(repo=tmp_path)
+
+    assert config.model == "minimax/minimax-m3-20260531"
+
+
+def test_model_profile_ignores_non_minimax_env_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATCHPILOT_MODEL", "custom/model")
+    monkeypatch.setenv("PATCHPILOT_V2_MODEL", "custom/other")
+
+    config = PatchPilotConfig.from_env(repo=tmp_path)
+
+    assert config.model == DEFAULT_V2_MODEL
 
 
 def test_openrouter_validates_structured_selection_and_metadata(tmp_path) -> None:
@@ -115,3 +152,34 @@ def test_openrouter_completes_typed_json_with_metadata(tmp_path) -> None:
     assert response.data["approved"] is True
     assert response.metadata is not None
     assert response.metadata.usage.total_tokens == 9
+
+
+def test_openrouter_accepts_fenced_json_content(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "gen-json",
+                "model": DEFAULT_MODEL,
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '```json\n{"approved": true, "issues": []}\n```'},
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+            },
+        )
+
+    config = PatchPilotConfig(repo=tmp_path, openrouter_api_key="sk-test")
+    model = OpenRouterModelClient(config, transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(
+        model.complete_json(
+            prompt={"task": "review"},
+            schema_name="ReviewResult",
+            json_schema={"type": "object"},
+        )
+    )
+
+    assert response.data["approved"] is True

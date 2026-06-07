@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import re
+import difflib
 from pathlib import Path
 
-from patchpilot.schemas.common import CommandRisk, FileBundle, FileContent, JsonObject, PathInput, Permission, ToolNamespace
+from patchpilot.schemas.common import (
+    CommandRisk,
+    FileBundle,
+    FileContent,
+    FileReadError,
+    JsonObject,
+    PathInput,
+    Permission,
+    ToolNamespace,
+)
 from patchpilot.schemas.tool_io import (
     ApplyPatchInput,
     ApplyPatchOutput,
@@ -62,11 +72,43 @@ def register(registry: ToolRegistry) -> None:
     )
     async def read_files(input: ReadFilesInput, context: ToolContext) -> FileBundle:
         root = Path(context.repo_root)
-        files = [
-            FileContent(path=rel_path(root, repo_path(root, path)), content=read_text(repo_path(root, path), input.max_bytes_per_file))
-            for path in input.paths
-        ]
-        return FileBundle(files=files)
+        files: list[FileContent] = []
+        missing_files: list[Path] = []
+        errors: list[FileReadError] = []
+        for requested_path in input.paths:
+            try:
+                path = repo_path(root, requested_path)
+                content = read_text(path, input.max_bytes_per_file)
+            except FileNotFoundError as exc:
+                missing_files.append(requested_path)
+                errors.append(
+                    FileReadError(
+                        path=requested_path,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                )
+                continue
+            except OSError as exc:
+                errors.append(
+                    FileReadError(
+                        path=requested_path,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                )
+                continue
+            except Exception as exc:
+                errors.append(
+                    FileReadError(
+                        path=requested_path,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                )
+                continue
+            files.append(FileContent(path=rel_path(root, path), content=content))
+        return FileBundle(files=files, missing_files=missing_files, errors=errors)
 
     @registry.tool(
         name="fs.write_file",
@@ -92,40 +134,60 @@ def register(registry: ToolRegistry) -> None:
     )
     async def apply_patch(input: ApplyPatchInput, context: ToolContext) -> ApplyPatchOutput:
         root = Path(context.repo_root).resolve()
-        changed_paths = _changed_paths_from_patch(input.patch)
+        changed_paths = list(dict.fromkeys([*_changed_paths_from_patch(input.patch), *_changed_paths_from_structured_edits(input.structured_edits)]))
         _validate_patch_paths(root, changed_paths)
         before = _path_hashes(root, changed_paths)
-        tmp = create_temp_file(root, "patch-", ".diff", input.patch)
-        git_root_output = await run_process(root, "git rev-parse --show-toplevel", context.config.command_timeout_seconds, risk=CommandRisk.LOW)
-        is_git_worktree = git_root_output.exit_code == 0
-        if is_git_worktree:
-            git_root = Path(git_root_output.stdout.strip()).resolve()
-            directory = root.relative_to(git_root).as_posix()
-            directory_arg = "" if directory == "." else f' --directory="{directory}"'
-            command = f'git apply{directory_arg} "{tmp}"'
-            output = await run_process(git_root, command, context.config.command_timeout_seconds, risk=CommandRisk.LOW)
-        else:
-            output = await run_process(root, f'git apply "{tmp}"', context.config.command_timeout_seconds, risk=CommandRisk.LOW)
-
-        changed = _path_hashes(root, changed_paths) != before
-        if changed_paths and not changed and output.exit_code != 0:
-            changed = _apply_simple_unified_patch(root, input.patch)
-        applied = changed or (output.exit_code == 0 and not changed_paths)
+        before_text = _path_texts(root, changed_paths)
+        apply_stdout = ""
+        apply_stderr = ""
+        git_apply_exit_code = 1
+        if changed_paths and input.structured_edits:
+            _apply_structured_edits(root, input.structured_edits)
+        after = _path_hashes(root, changed_paths)
+        actual_changed = _changed_path_subset(before, after)
+        if not actual_changed and input.patch.strip():
+            tmp = create_temp_file(root, "patch-", ".diff", input.patch)
+            git_root_output = await run_process(root, "git rev-parse --show-toplevel", context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+            is_git_worktree = git_root_output.exit_code == 0
+            if is_git_worktree:
+                git_root = Path(git_root_output.stdout.strip()).resolve()
+                directory = root.relative_to(git_root).as_posix()
+                directory_arg = "" if directory == "." else f' --directory="{directory}"'
+                command = f'git apply{directory_arg} "{tmp}"'
+                output = await run_process(git_root, command, context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+            else:
+                output = await run_process(root, f'git apply "{tmp}"', context.config.command_timeout_seconds, risk=CommandRisk.LOW)
+            apply_stdout = output.stdout
+            apply_stderr = output.stderr
+            git_apply_exit_code = output.exit_code
+            after = _path_hashes(root, changed_paths)
+            actual_changed = _changed_path_subset(before, after)
+            if not actual_changed and output.exit_code != 0:
+                _apply_simple_unified_patch(root, input.patch)
+                after = _path_hashes(root, changed_paths)
+                actual_changed = _changed_path_subset(before, after)
+        after_text = _path_texts(root, changed_paths)
+        clean_diff = _clean_diff(before_text, after_text)
+        satisfied = _structured_edits_satisfied(root, input.structured_edits)
+        applied = bool(actual_changed) or (not changed_paths and git_apply_exit_code == 0) or satisfied
         if applied:
             context.artifacts.setdefault("applied_patches", []).append(
                 {
-                    "patch": input.patch,
-                    "changed_files": [path.as_posix() for path in changed_paths],
+                    "patch": clean_diff or input.patch,
+                    "original_patch": input.patch,
+                    "clean_diff": clean_diff,
+                    "changed_files": [path.as_posix() for path in (actual_changed or changed_paths)],
                     "hunks_applied": input.patch.count("\n@@"),
                 }
             )
         return ApplyPatchOutput(
             applied=applied,
-            stdout=output.stdout,
-            stderr=output.stderr,
-            changed_files=changed_paths if applied else [],
+            stdout=apply_stdout,
+            stderr=apply_stderr,
+            changed_files=(actual_changed or changed_paths) if applied else [],
             hunks_applied=input.patch.count("\n@@"),
-            summary=f"Applied patch to {len(changed_paths)} file(s)" if applied else "Patch produced no changes",
+            clean_diff=clean_diff,
+            summary=f"Applied structured edits to {len(actual_changed or changed_paths)} file(s)" if applied and input.structured_edits else (f"Applied patch to {len(actual_changed)} file(s)" if applied else "Patch produced no changes"),
         )
 
     @registry.tool(
@@ -222,6 +284,15 @@ def _changed_paths_from_patch(patch: str) -> list[Path]:
     return paths
 
 
+def _changed_paths_from_structured_edits(edits: list[dict]) -> list[Path]:
+    paths: list[Path] = []
+    for edit in edits:
+        path = edit.get("path") or edit.get("file")
+        if path:
+            paths.append(Path(str(path).strip()))
+    return paths
+
+
 def _validate_patch_paths(root: Path, paths: list[Path]) -> None:
     for path in paths:
         repo_path(root, path)
@@ -232,6 +303,21 @@ def _path_hashes(root: Path, paths: list[Path]) -> dict[Path, str | None]:
         path: sha256_file(resolved) if (resolved := repo_path(root, path)).exists() else None
         for path in paths
     }
+
+
+def _path_texts(root: Path, paths: list[Path]) -> dict[Path, str]:
+    texts: dict[Path, str] = {}
+    for path in paths:
+        resolved = repo_path(root, path)
+        if resolved.exists():
+            texts[path] = resolved.read_text(encoding="utf-8", errors="replace")
+        else:
+            texts[path] = ""
+    return texts
+
+
+def _changed_path_subset(before: dict[Path, str | None], after: dict[Path, str | None]) -> list[Path]:
+    return [path for path in after if before.get(path) != after.get(path)]
 
 
 def _apply_simple_unified_patch(root: Path, patch: str) -> bool:
@@ -256,6 +342,73 @@ def _apply_simple_unified_patch(root: Path, patch: str) -> bool:
     if current is not None and removals and additions:
         changed = _replace_lines(current, removals, additions) or changed
     return changed
+
+
+def _apply_structured_edits(root: Path, edits: list[dict]) -> bool:
+    changed = False
+    for edit in edits:
+        path_value = edit.get("path") or edit.get("file")
+        before = edit.get("before") if edit.get("before") is not None else edit.get("old_text")
+        after = edit.get("after") if edit.get("after") is not None else edit.get("new_text")
+        if not path_value or before is None or after is None:
+            continue
+        changed = _replace_text(repo_path(root, Path(str(path_value))), str(before), str(after)) or changed
+    return changed
+
+
+def _structured_edits_satisfied(root: Path, edits: list[dict]) -> bool:
+    if not edits:
+        return False
+    for edit in edits:
+        path_value = edit.get("path") or edit.get("file")
+        after = edit.get("after") if edit.get("after") is not None else edit.get("new_text")
+        if not path_value or after is None:
+            return False
+        path = repo_path(root, Path(str(path_value)))
+        if not path.exists():
+            return False
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if str(after) not in text and str(after).replace("\r\n", "\n") not in text.replace("\r\n", "\n"):
+            return False
+    return True
+
+
+def _replace_text(path: Path, old: str, new: str) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if old not in text:
+        old_lf = old.replace("\r\n", "\n")
+        text_lf = text.replace("\r\n", "\n")
+        count = text_lf.count(old_lf)
+        if count != 1:
+            return False
+        new_lf = new.replace("\r\n", "\n")
+        path.write_text(text_lf.replace(old_lf, new_lf, 1), encoding="utf-8")
+        return True
+    if text.count(old) != 1:
+        return False
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
+def _clean_diff(before: dict[Path, str], after: dict[Path, str]) -> str:
+    chunks: list[str] = []
+    for path in after:
+        old = before.get(path, "")
+        new = after.get(path, "")
+        if old == new:
+            continue
+        chunks.extend(
+            difflib.unified_diff(
+                old.splitlines(),
+                new.splitlines(),
+                fromfile=f"a/{path.as_posix()}",
+                tofile=f"b/{path.as_posix()}",
+                lineterm="",
+            )
+        )
+    return "\n".join(chunks) + ("\n" if chunks else "")
 
 
 def _replace_lines(path: Path, removals: list[str], additions: list[str]) -> bool:

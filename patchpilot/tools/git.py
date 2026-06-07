@@ -16,7 +16,7 @@ async def _git(context: ToolContext, args: str) -> GitCommandOutput:
         if args.startswith("diff"):
             patches = context.artifacts.get("applied_patches", []) if context.artifacts else []
             if patches:
-                stdout = "\n\n".join(str(item.get("patch", "")) for item in patches if item.get("patch"))
+                stdout = "\n\n".join(str(item.get("clean_diff") or item.get("patch") or "") for item in patches if item.get("clean_diff") or item.get("patch"))
                 return GitCommandOutput(stdout=stdout, stderr="", exit_code=0)
         return GitCommandOutput(stdout="", stderr=f"not a git repository: {root}", exit_code=1)
     output = await run_process(

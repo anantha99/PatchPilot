@@ -14,18 +14,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from patchpilot.config import PatchPilotConfig
 from patchpilot.errors import MissingModelApiKeyError, ModelRequestError, ModelResponseError, ModelSchemaError
 from patchpilot.models.base import ModelCacheMetadata, ModelCallMetadata, ModelClient, ModelJsonResponse, ModelUsage, ToolSelection
-
-
-PHASE_INSTRUCTIONS = {
-    "inspect": "Inspect the repo. Prefer fs.list_dir, code.detect_language, code.detect_package_manager, code.find_tests, exec.detect_test_command, then memory_eval.mark_phase reproduce.",
-    "reproduce": "Run the supplied or detected tests to capture the failing output, then mark phase diagnose.",
-    "diagnose": "Extract failure locations and spawn the diagnosis subagent with the failing output, then record an observation and mark phase plan_patch.",
-    "plan_patch": "Map failing tests to source, read the failing test and implicated source files. PatchPilot will ask you for a typed PatchPlan once enough file evidence is present.",
-    "apply_patch": "Apply the validated stored patch plan. Call fs.apply_patch with the patch from the patch_plan artifact when it appears in recent history.",
-    "validate": "Run targeted tests first, then full tests, then capture git.diff and mark phase review.",
-    "review": "Spawn the review subagent, summarize/retrieve artifacts, then mark phase report.",
-    "report": "Collect command history, export session memory, then finish.",
-}
+from patchpilot.runtime.prompts import structured_json_prompt, tool_selection_prompt
 
 
 class OpenRouterModelClient(ModelClient):
@@ -39,18 +28,7 @@ class OpenRouterModelClient(ModelClient):
     async def select_tool(self, state, tools) -> ToolSelection:
         if not self.config.openrouter_api_key:
             raise MissingModelApiKeyError("OPENROUTER_API_KEY is required for live model runs")
-        prompt = {
-            "goal": state.goal,
-            "phase": state.phase,
-            "phase_instructions": PHASE_INSTRUCTIONS.get(state.phase, ""),
-            "test_command": state.test_command,
-            "validation_status": state.validation_status,
-            "attempt": state.attempt,
-            "tools": _compact_tools(tools),
-            "recent_tool_calls": state.tool_history[-8:],
-            "last_command_output": _truncate(state.last_command_output, 6000),
-            "last_text_output": _truncate(state.last_text_output, 4000),
-        }
+        prompt = tool_selection_prompt(state, _compact_tools(tools))
         started = time.perf_counter()
         retry_count = 0
         async with self._client() as client:
@@ -115,26 +93,7 @@ class OpenRouterModelClient(ModelClient):
                                 "HTTP-Referer": "https://github.com/patchpilot/patchpilot",
                                 "X-Title": "PatchPilot",
                             },
-                            json={
-                                "model": self.config.model,
-                                "messages": [
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            f"Return only JSON matching the {schema_name} schema. "
-                                            "Do not include markdown. Use repository-relative paths."
-                                        ),
-                                    },
-                                    {
-                                        "role": "user",
-                                        "content": json.dumps(
-                                            {"schema_name": schema_name, "json_schema": json_schema, "task": prompt},
-                                            default=str,
-                                        ),
-                                    },
-                                ],
-                                "response_format": {"type": "json_object"},
-                            },
+                            json=self._request_body(structured_json_prompt(schema_name=schema_name, json_schema=json_schema, task=prompt)),
                         )
                         if response.status_code >= 400:
                             raise ModelRequestError(
@@ -150,15 +109,22 @@ class OpenRouterModelClient(ModelClient):
         return httpx.AsyncClient(base_url=self.config.base_url, timeout=30, transport=self._transport)
 
     def _request_body(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        stable = prompt.get("stable") or {}
+        role = stable.get("role")
+        if role == "structured-json":
+            instructions = " ".join(str(item) for item in stable.get("instructions", []))
+            system_content = instructions or "Return only JSON matching the supplied schema."
+        else:
+            system_content = (
+                "You are PatchPilot's tool-selection model. Return only JSON matching this shape: "
+                "{\"tool_name\": string|null, \"arguments\": object, \"rationale\": string, \"finish\": boolean}."
+            )
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are PatchPilot's tool-selection model. Return only JSON matching this shape: "
-                        "{\"tool_name\": string|null, \"arguments\": object, \"rationale\": string, \"finish\": boolean}."
-                    ),
+                    "content": system_content,
                 },
                 {"role": "user", "content": json.dumps(prompt, default=str)},
             ],
@@ -199,7 +165,7 @@ class OpenRouterModelClient(ModelClient):
         if content is None:
             raise ModelResponseError("OpenRouter returned empty message content", {"id": payload.get("id"), "finish_reason": finish_reason})
         try:
-            data = content if isinstance(content, dict) else json.loads(content)
+            data = _json_content(content)
         except json.JSONDecodeError as exc:
             raise ModelSchemaError("OpenRouter structured response was not JSON", {"content": content}) from exc
         metadata = ModelCallMetadata(
@@ -252,10 +218,31 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _truncate(value: str, max_chars: int) -> str:
-    if len(value) <= max_chars:
-        return value
-    return value[-max_chars:]
+def _json_content(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        raise json.JSONDecodeError("content is not a JSON string", str(content), 0)
+    text = content.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = json.loads(_extract_json_object(text))
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("content is not a JSON object", text, 0)
+    return data
+
+
+def _extract_json_object(text: str) -> str:
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start : end + 1]
+    return text
 
 
 def _compact_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

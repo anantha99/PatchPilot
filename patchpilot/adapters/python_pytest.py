@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from patchpilot.tools.helpers import iter_repo_files
+
 
 class PythonPytestAdapter:
     def applies_to(self, repo: Path, test_command: str | None = None) -> bool:
@@ -56,7 +58,7 @@ class PythonPytestAdapter:
                         candidates.extend(_reexport_candidates(repo, path, text))
         if not candidates and test_path.name.startswith("test_"):
             stem = test_path.stem.removeprefix("test_")
-            candidates.extend(path.relative_to(repo) for path in repo.rglob(f"{stem}.py") if "tests" not in path.parts)
+            candidates.extend(path.relative_to(repo) for path in iter_repo_files(repo) if path.name == f"{stem}.py" and "tests" not in path.parts)
         return list(dict.fromkeys(candidates))
 
 

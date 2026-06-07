@@ -1,4 +1,4 @@
-"""Shared eval checks for trace-derived assignment proof."""
+"""Shared eval checks for trace-derived repair proof."""
 
 from __future__ import annotations
 

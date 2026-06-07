@@ -48,7 +48,23 @@ def test_python_pytest_adapter_maps_test_imports_to_source() -> None:
 def test_additional_python_fixtures_fail_before_repair() -> None:
     root = Path(__file__).parents[1] / "fixtures"
 
-    for fixture in ("buggy-validation-repo", "buggy-parser-repo", "mock-store-python"):
+    fixtures = [
+        "buggy-validation-repo",
+        "buggy-parser-repo",
+        "mock-store-python",
+        "multifile-calendar-window",
+        "multifile-inventory-state",
+        "multifile-parser-validator",
+        "multifile-permissions-contract",
+        "multifile-profile-contract",
+        "multifile-reexport-drift",
+        "multifile-retry-partial-trap",
+        "multifile-serialization-drift",
+        "multifile-shipping-rules",
+        "multifile-taxes-rounding",
+    ]
+
+    for fixture in fixtures:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"],
             cwd=root / fixture,

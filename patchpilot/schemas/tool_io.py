@@ -34,7 +34,8 @@ class WriteFileInput(BaseModel):
 
 
 class ApplyPatchInput(BaseModel):
-    patch: str
+    patch: str = ""
+    structured_edits: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ApplyPatchOutput(BaseModel):
@@ -43,6 +44,7 @@ class ApplyPatchOutput(BaseModel):
     stderr: str = ""
     changed_files: list[Path] = Field(default_factory=list)
     hunks_applied: int = 0
+    clean_diff: str = ""
     summary: str = ""
 
 
@@ -145,6 +147,10 @@ class PatchValidationInput(BaseModel):
     task_classification: str
     target_files: list[Path]
     patch: str | None = None
+    structured_edits: list["PatchEdit"] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    root_cause: str = ""
+    patch_plan: dict[str, Any] = Field(default_factory=dict)
     max_diff_lines: int = 200
     protected_paths: list[Path] = Field(default_factory=lambda: [Path(".git"), Path(".env")])
     allow_test_only: bool = False
@@ -154,22 +160,29 @@ class PatchValidationOutput(BaseModel):
     valid: bool
     reasons: list[str] = Field(default_factory=list)
     target_files: list[Path] = Field(default_factory=list)
+    changed_files: list[Path] = Field(default_factory=list)
     diff_lines: int = 0
+    semantic_reasons: list[str] = Field(default_factory=list)
 
 
 class PatchEdit(BaseModel):
     path: Path
     before: str
     after: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    purpose: str = ""
+    expected_validation: list[str] = Field(default_factory=list)
+    root_cause_linkage: str = ""
 
 
 class PatchPlan(BaseModel):
     task_classification: str
     root_cause: str
     evidence_refs: list[str] = Field(default_factory=list)
-    expected_changed_files: list[Path] = Field(default_factory=list)
+    planned_changed_files: list[Path] = Field(default_factory=list)
     edits: list[PatchEdit]
-    patch: str
+    patch: str = ""
+    unified_diff: str | None = None
     risk_notes: list[str] = Field(default_factory=list)
     validation_expectations: list[str] = Field(default_factory=list)
     summary: str
@@ -327,7 +340,9 @@ class SubagentConfig(BaseModel):
 class DiagnosisResult(BaseModel):
     root_cause: str
     evidence: dict[str, Any] = Field(default_factory=dict)
+    evidence_links: list[str] = Field(default_factory=list)
     implicated_files: list[Path] = Field(default_factory=list)
+    shared_root_cause: str = ""
     recommended_patch_direction: str
     confidence: float = 0.0
     risks: list[str] = Field(default_factory=list)
@@ -339,6 +354,8 @@ class ReviewResult(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     regression_risk: str = "unknown"
     missing_validation: list[str] = Field(default_factory=list)
+    changed_file_necessity: dict[str, str] = Field(default_factory=dict)
+    blocking: bool = False
     confidence: float = 0.0
 
 
