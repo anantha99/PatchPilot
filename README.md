@@ -2,18 +2,18 @@
 
 PatchPilot is a repository repair agent for bounded maintenance loops. It inspects a local repo, reproduces failures, asks a real model to choose phase-scoped tools, delegates diagnosis and review to scoped subagents, creates a typed patch plan, validates the patch before writing, applies the patch, reruns tests, and emits an auditable JSON report plus JSONL trace.
 
-The v1 focus is Python/pytest repair on small product repositories. The demo repository is mocked and controlled, but the agent path is real: OpenRouter model calls, model-selected tools, structured subagent outputs, patch validation, file writes, tests, and final report generation all run through PatchPilot.
+The v2 focus is blind multi-file Python/pytest repair on small controlled repositories. The fixture repositories are controlled, but the runtime is not handed fixture answer keys: OpenRouter/MiniMax model calls, model-selected tools, inferred working sets, structured subagent outputs, structured-edit patch planning, file writes, retries, tests, and final report generation all run through PatchPilot.
 
-## What v1 Can Do
+## What v2 Can Do
 
-- Repair a failing Python/pytest fixture repository through the real OpenRouter provider.
-- Use configurable OpenRouter models such as `z-ai/glm-4.7-flash` or `minimax/minimax-m3`.
+- Repair a failing Python/pytest fixture repository through the real OpenRouter/MiniMax provider path.
+- Use a MiniMax-only v2 model profile that defaults to `minimax/minimax-m3`; non-MiniMax model/profile values resolve back to the MiniMax default.
 - Run phase-scoped tool selection across inspect, reproduce, diagnose, plan patch, apply patch, validate, review, and report.
 - Spawn isolated diagnosis and review subagents with scoped tools and structured output schemas.
-- Generate a typed `PatchPlan`, validate changed files, protected paths, diff size, and test-only edits before writes.
-- Apply a minimal source patch and rerun targeted plus full pytest validation.
-- Produce a final JSON report with status, root cause, changed files, tests run, subagents, model/provider, cost metadata, tool count, and trace ID.
-- Score a smoke eval from persisted traces and final reports rather than private runtime state.
+- Generate a typed `PatchPlan` with exact structured search/replace edits, then validate changed files, evidence links, protected paths, optional diff size, binary edits, ambiguous search blocks, and test edits before writes.
+- Apply structured edits first, generate a clean local diff from the actual file changes, and rerun targeted plus full pytest validation, with budgeted retry when an applied patch fails validation.
+- Preserve working-set, semantic-validation, attempt, retry, review, model usage, cost, cache, report, and trace artifacts.
+- Score v2 fixture evals from persisted traces and final reports after the run. Product pass/fail is behavior-first: final tests pass, source edits are safe, semantic validation is visible, review does not reject, and the final report is complete. Fixture metadata is a post-run oracle diagnostic only and is excluded from the runtime work copy.
 
 ## Setup
 
@@ -32,7 +32,9 @@ $env:OPENROUTER_API_KEY = "..."
 
 Optional model configuration:
 
-- `PATCHPILOT_MODEL`
+- `PATCHPILOT_MODEL` (MiniMax model IDs only)
+- `PATCHPILOT_MODEL_PROFILE` (`v2-strong`, `minimax`, `minimax-m3`, or a direct MiniMax model id)
+- `PATCHPILOT_V2_MODEL` (MiniMax model IDs only)
 - `PATCHPILOT_BASE_URL`
 - `PATCHPILOT_MODEL_PROVIDER`
 - `PATCHPILOT_MAX_MODEL_CALLS`
@@ -49,19 +51,7 @@ Primary v1 demo:
   --allow-exec `
   --allow-write `
   --model-provider openrouter `
-  --model minimax/minimax-m3
-```
-
-Default GLM path:
-
-```powershell
-.\.venv\Scripts\python.exe -m patchpilot.cli run `
-  --repo fixtures\mock-store-python `
-  --goal "Fix the failing pytest test" `
-  --allow-exec `
-  --allow-write `
-  --model-provider openrouter `
-  --model z-ai/glm-4.7-flash
+  --model-profile v2-strong
 ```
 
 The run prints a final JSON report to stdout and records the same report as a `run.completed` trace event under:
@@ -83,31 +73,49 @@ Real OpenRouter smoke eval:
   --live-eval
 ```
 
-A verified MiniMax run produced:
+V2 multi-file live eval with visible progress:
 
-```json
-{
-  "provider": "openrouter",
-  "model": "minimax/minimax-m3-20260531",
-  "report_status": "success",
-  "score": 1.0,
-  "tool_calls": 28,
-  "trace_id": "tr_fd1f59f76f87"
-}
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli eval `
+  --suite v2 `
+  --repo fixtures `
+  --model-provider openrouter `
+  --model-profile v2-strong `
+  --live-eval
 ```
 
-The eval checks confirm 50+ registered tools, real model selections, 20+ tool calls, isolated subagents, structured subagent output, typed model patch planning, source patch application, failing-to-passing pytest validation, and a complete final report.
+Progress is written to stderr so stdout remains parseable JSON. Use `--quiet` for machine-only output.
+
+Run one fixture at a time while tuning or inspecting failures:
+
+```powershell
+.\.venv\Scripts\python.exe -m patchpilot.cli eval `
+  --suite v2 `
+  --repo fixtures\multifile-parser-validator `
+  --model-provider openrouter `
+  --model-profile v2-strong `
+  --live-eval
+```
+
+Without `OPENROUTER_API_KEY`, the v2 eval returns categorized `missing_api_key` fixture results and does not spend model budget. Eval output includes `runtime_oracle_visible: false` to make the blind-runtime boundary explicit.
+
+Live v2 eval also writes a Markdown report to:
+
+```text
+<eval-root>/.patchpilot/reports/report.md
+```
+
+The report includes product pass rate, multi-file contract match rate, per-fixture changed files, trace/report paths, test metadata, model calls, tool calls, retries, cost, cache, and oracle mismatch diagnostics.
 
 ## Offline Verification
 
-Automated tests and cheap local smoke checks can use the deterministic fake model explicitly:
+Automated tests use deterministic fake or mocked model clients directly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m patchpilot.cli eval --suite smoke --repo fixtures\buggy-python-repo --model-provider fake
 ```
 
-The fake provider is a test double. Product and live eval commands should use `--model-provider openrouter`.
+The fake provider is test infrastructure, not a product demo path. Product and live eval commands use `--model-provider openrouter`.
 
 ## Docker And Wrapper Commands
 
@@ -131,9 +139,10 @@ docker compose run --rm xarc-shell
 ## Fixtures
 
 - `fixtures/mock-store-python`: primary v1 demo repo. It contains a tiny ecommerce-style Python app where `apply_discount` subtracts the raw percent value instead of applying it as a percentage. The expected repair changes `mock_store/pricing.py`.
-- `fixtures/buggy-python-repo`: deterministic arithmetic repair fixture used by fake-provider tests.
+- `fixtures/buggy-python-repo`: deterministic arithmetic repair fixture used by direct fake-client tests.
 - `fixtures/buggy-validation-repo`: validation branch fixture.
 - `fixtures/buggy-parser-repo`: parser delimiter fixture with parametrized pytest failures.
+- `fixtures/multifile-*`: eleven v2 multi-file Python/pytest fixture repos. Each fixture's pytest suite directly exercises behavior owned by every file listed in `expected_changed_source_files`, so known one-file partial repairs still fail and known full repairs pass. Eval uses `fixture.json` only after the run to emit `multi_file_contract` diagnostics; it is not copied into the runtime work repo.
 
 ## Trace Inspection
 
@@ -149,4 +158,4 @@ Show a trace:
 .\.venv\Scripts\python.exe -m patchpilot.cli trace show tr_fd1f59f76f87 --trace-dir fixtures\mock-store-python\.patchpilot\traces
 ```
 
-Traces include `model.tool_selection`, `tool.started`, `tool.completed`, `subagent.started`, `subagent.completed`, `model.patch_plan`, `plan.updated`, `context.compacted`, and `run.completed` events.
+Traces include `model.tool_selection`, `tool.started`, `tool.completed`, `subagent.started`, `subagent.completed`, `model.patch_plan`, `runtime.repair_attempt`, `runtime.retry_scheduled`, `plan.updated`, `context.compacted`, and `run.completed` events. Final JSON reports are written beside traces under `.patchpilot/reports/`.

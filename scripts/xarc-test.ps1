@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("test", "smoke", "live-eval", "shell")]
+    [ValidateSet("test", "smoke", "live-eval", "v2-live-eval", "shell")]
     [string] $Target = "test",
 
     [switch] $NoDocker
@@ -37,6 +37,7 @@ if (Test-DockerAvailable) {
         "test" { & docker compose run --rm xarc-test }
         "smoke" { & docker compose run --rm xarc-smoke }
         "live-eval" { & docker compose run --rm xarc-live-eval }
+        "v2-live-eval" { & docker compose run --rm xarc-live-eval python -m patchpilot.cli eval --suite v2 --repo fixtures --model-provider openrouter --model-profile v2-strong --live-eval }
         "shell" { & docker compose run --rm xarc-shell }
     }
     exit $LASTEXITCODE
@@ -55,7 +56,10 @@ switch ($Target) {
         & $Python -m patchpilot.cli eval --suite smoke --repo fixtures\buggy-python-repo --model-provider fake
     }
     "live-eval" {
-        & $Python -m patchpilot.cli eval --suite smoke --repo fixtures\buggy-python-repo --live-eval
+        & $Python -m patchpilot.cli eval --suite smoke --repo fixtures\mock-store-python --live-eval
+    }
+    "v2-live-eval" {
+        & $Python -m patchpilot.cli eval --suite v2 --repo fixtures --model-provider openrouter --model-profile v2-strong --live-eval
     }
     "shell" {
         & $Python

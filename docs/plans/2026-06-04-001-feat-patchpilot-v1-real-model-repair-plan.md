@@ -10,7 +10,7 @@ origin: docs/brainstorms/2026-06-04-patchpilot-v1-real-model-repair-requirements
 
 ## Summary
 
-Turn PatchPilot from a deterministic v0 proof into a real OpenRouter/GLM-driven Python/pytest repair agent. The v1 product and eval paths should use GLM-4.7 Flash for model decisions, while fake model clients remain only as automated test doubles.
+Turn PatchPilot from a deterministic v0 proof into a real OpenRouter/MiniMax-driven Python/pytest repair agent. The v1 product and eval paths should use MiniMax M3 for model decisions, while fake model clients remain only as automated test doubles.
 
 The release should still prove the assignment properties directly from runtime traces: 50+ typed tools, model-driven selection, isolated subagents, 20+ coherent tool calls, production scaffolding, and composable tool I/O.
 
@@ -20,7 +20,7 @@ The release should still prove the assignment properties directly from runtime t
 
 `assignment.md` is the final source of truth. It asks for a production-shaped autonomous agent where depth matters more than completion, and it specifically checks architecture, orchestration, context strategy, scaffolding, and composable tools. The current v0 code already has the right skeleton: `ToolRegistry`, `ToolExecutor`, trace storage, safety gates, phased repair runtime, basic OpenRouter provider, fake model scripts, eval scoring, and a smoke fixture.
 
-The gap is that v0 is still strongest as a scripted proof. v1 should make the normal product run real: GLM selects tools, subagents run their own model/tool loops, patch plans are derived from observed evidence, validation failure can cause a retry, and final reports include model/cost/cache metadata. The deterministic path stays, but only to keep tests repeatable and cheap.
+The gap is that v0 is still strongest as a scripted proof. v1 should make the normal product run real: MiniMax selects tools, subagents run their own model/tool loops, patch plans are derived from observed evidence, validation failure can cause a retry, and final reports include model/cost/cache metadata. The deterministic path stays, but only to keep tests repeatable and cheap.
 
 ---
 
@@ -28,8 +28,8 @@ The gap is that v0 is still strongest as a scripted proof. v1 should make the no
 
 **Real Model Execution**
 
-- R1. Normal product runs use OpenRouter with GLM-4.7 Flash as the default real model path.
-- R2. Fake or mocked model clients are retained only for automated tests; eval runs use the real OpenRouter/GLM path.
+- R1. Normal product runs use OpenRouter with MiniMax M3 as the default real model path.
+- R2. Fake or mocked model clients are retained only for automated tests; eval runs use the real OpenRouter/MiniMax path.
 - R3. Model responses are structured and validated before use; invalid output produces typed errors and trace events.
 - R4. Model calls are traced with model name, phase, status, duration, retry metadata, token usage when available, estimated cost when available, and cache metadata when available.
 - R5. Prompt caching support is configurable, and traces expose observed cache behavior without promising savings when provider metadata is absent.
@@ -61,7 +61,7 @@ The gap is that v0 is still strongest as a scripted proof. v1 should make the no
 
 - R20. `MEMO.md` is updated for final submission and explains what was built, what was cut, what additional time would address, and one defended design decision.
 - R21. The repository can be made public without leaking API keys, local secrets, or unnecessary host-specific paths.
-- R22. The walkthrough can demonstrate a real GLM-driven run, one substantive code path, and one moment where user/model direction diverged.
+- R22. The walkthrough can demonstrate a real MiniMax-driven run, one substantive code path, and one moment where user/model direction diverged.
 - R23. The submitted artifacts include Codex session export plus PatchPilot runtime traces for demo and eval runs.
 
 ---
@@ -85,7 +85,7 @@ The gap is that v0 is still strongest as a scripted proof. v1 should make the no
 flowchart TB
   CLI["Typer CLI"] --> Config["PatchPilotConfig"]
   Config --> Runtime["Parent RepairRuntime"]
-  Runtime --> Model["OpenRouterModelClient - GLM"]
+  Runtime --> Model["OpenRouterModelClient - MiniMax M3"]
   Runtime --> PhaseViews["Phase-scoped tool metadata"]
   PhaseViews --> Registry["ToolRegistry"]
   Runtime --> Executor["ToolExecutor"]
@@ -94,7 +94,7 @@ flowchart TB
   Tools --> Trace["TraceStore JSONL"]
   Model --> Trace
   Runtime --> Subagents["DiagnosisAgent + ReviewAgent"]
-  Subagents --> ChildModel["Scoped GLM loop"]
+  Subagents --> ChildModel["Scoped MiniMax M3 loop"]
   Subagents --> ChildTools["Scoped child tools"]
   ChildModel --> Trace
   ChildTools --> Trace
@@ -103,19 +103,19 @@ flowchart TB
   Report --> Eval
 ```
 
-The parent runtime owns phase order, permissions, budgets, and final reporting. GLM receives compact state and phase-scoped tool metadata, then returns a structured tool selection. The executor validates inputs, permissions, retries, rate limits, traces execution, and validates outputs. Subagents run separate child loops and return typed evidence to the parent. The eval harness reads persisted traces and final reports to score the assignment properties.
+The parent runtime owns phase order, permissions, budgets, and final reporting. MiniMax receives compact state and phase-scoped tool metadata, then returns a structured tool selection. The executor validates inputs, permissions, retries, rate limits, traces execution, and validates outputs. Subagents run separate child loops and return typed evidence to the parent. The eval harness reads persisted traces and final reports to score the assignment properties.
 
 ---
 
 ## Implementation Units
 
-### U1. OpenRouter GLM Provider And Model Metadata
+### U1. OpenRouter MiniMax M3 Provider And Model Metadata
 
-- **Goal:** Make OpenRouter/GLM the reliable product model path with typed errors, retries, rate limiting, and cost/cache visibility.
+- **Goal:** Make OpenRouter/MiniMax the reliable product model path with typed errors, retries, rate limiting, and cost/cache visibility.
 - **Files:** `patchpilot/config.py`, `patchpilot/cli.py`, `patchpilot/models/base.py`, `patchpilot/models/openrouter.py`, `patchpilot/observability/tracing.py`, `patchpilot/schemas/reports.py`, `tests/test_model_clients.py`, `tests/test_cli.py`
 - **Work:**
   - Change product and eval default model provider to OpenRouter while preserving fake selection only for automated tests.
-  - Set the default model from config/env to the GLM-4.7 Flash OpenRouter model ID.
+  - Set the default model from config/env to the MiniMax M3 OpenRouter model ID.
   - Add model-call retry with exponential backoff and rate limiting around external calls.
   - Add typed model errors for missing API key, request failure, invalid JSON, invalid schema, unsupported finish state, and budget exhaustion.
   - Extend `ToolSelection` or adjacent schemas with optional model metadata: provider, model, input tokens, output tokens, total tokens, estimated cost, cache hit/read/write details when available, and raw provider IDs safe for traces.
@@ -130,7 +130,7 @@ The parent runtime owns phase order, permissions, budgets, and final reporting. 
 
 ### U2. Parent Runtime Prompting, Phase Control, And Retry Decisions
 
-- **Goal:** Convert the parent repair loop from script-compatible orchestration into a real GLM-driven loop that still preserves phase coherence.
+- **Goal:** Convert the parent repair loop from script-compatible orchestration into a real MiniMax-driven loop that still preserves phase coherence.
 - **Files:** `patchpilot/runtime/graph.py`, `patchpilot/runtime/state.py`, `patchpilot/runtime/context.py`, `patchpilot/models/base.py`, `patchpilot/schemas/tool_io.py`, `patchpilot/schemas/reports.py`, `tests/test_runtime_phases.py`, `tests/test_repair_loop.py`
 - **Work:**
   - Build a parent prompt payload from compact state, current phase, recent tool history, preserved artifacts, open risks, and allowed tool metadata.
@@ -201,12 +201,12 @@ The parent runtime owns phase order, permissions, budgets, and final reporting. 
   - Generic command tests prove unknown stacks can enter the runtime when `--test-command` is supplied.
 - **Requirements:** R6, R7, R9, R10, R19.
 
-### U6. Eval Harness: Real GLM Proof With Test-Only Fakes
+### U6. Eval Harness: Real MiniMax M3 Proof With Test-Only Fakes
 
-- **Goal:** Make evals prove the real OpenRouter/GLM product path while keeping unit tests deterministic through mocked model clients.
+- **Goal:** Make evals prove the real OpenRouter/MiniMax product path while keeping unit tests deterministic through mocked model clients.
 - **Files:** `patchpilot/evals/harness.py`, `patchpilot/evals/suites.py`, `patchpilot/evals/checks.py`, `patchpilot/cli.py`, `tests/test_eval_harness.py`, `tests/integration/test_smoke_eval.py`
 - **Work:**
-  - Make `smoke` use OpenRouter/GLM by default and require `OPENROUTER_API_KEY`.
+  - Make `smoke` use OpenRouter/MiniMax by default and require `OPENROUTER_API_KEY`.
   - Keep fake-model execution inside pytest-only fixtures or mocked provider tests, not as the CLI eval path.
   - Score traces for model provider, model selection events, 20+ tool calls, phase coherence, subagent child loops, structured tool-output composition, successful validation, retry/rate-limit evidence when present, and final report completeness.
   - Add eval JSON fields for provider, model, trace ID, report path, score, checks, failure reasons, and cost metadata.
@@ -239,7 +239,7 @@ The parent runtime owns phase order, permissions, budgets, and final reporting. 
 - **Goal:** Update the repository so the reviewer can understand and reproduce the v1 product quickly.
 - **Files:** `README.md`, `MEMO.md`, `assignment.md`, `docs/brainstorms/2026-06-04-patchpilot-v1-real-model-repair-requirements.md`, `docs/plans/2026-06-04-001-feat-patchpilot-v1-real-model-repair-plan.md`
 - **Work:**
-  - Update README to make OpenRouter/GLM the documented product and eval path, with fake models described only as test doubles.
+  - Update README to make OpenRouter/MiniMax the documented product and eval path, with fake models described only as test doubles.
   - Document setup, environment variables, fixture commands, eval commands, trace inspection, and expected outputs.
   - Update `MEMO.md` as the one-page assignment memo: what was built, what was cut, additional time, and one defended design decision.
   - Add a concise demo script outline for the 3-5 minute walkthrough.
@@ -254,7 +254,7 @@ The parent runtime owns phase order, permissions, budgets, and final reporting. 
 
 ## Acceptance Examples
 
-- AE1. **Covers R1, R3, R4.** Given `OPENROUTER_API_KEY` is set and `patchpilot run` is invoked without `--model-provider fake`, the trace records GLM model calls, validated structured selections, token/cost/cache metadata when available, and tool execution following those selections.
+- AE1. **Covers R1, R3, R4.** Given `OPENROUTER_API_KEY` is set and `patchpilot run` is invoked without `--model-provider fake`, the trace records MiniMax model calls, validated structured selections, token/cost/cache metadata when available, and tool execution following those selections.
 - AE2. **Covers R2, R19.** Given the unit test suite runs offline, fake model clients drive deterministic tests without network calls or paid model usage.
 - AE3. **Covers R6, R7, R8.** Given a Python fixture with a failing pytest test, PatchPilot inspects evidence, creates a bounded patch plan, validates it, applies a source patch, and gets pytest passing.
 - AE4. **Covers R9, R10.** Given the first patch fails targeted validation, PatchPilot records the failed attempt, asks the model for a retry or new evidence, and the final report includes both attempts.
@@ -269,7 +269,7 @@ The parent runtime owns phase order, permissions, budgets, and final reporting. 
 **In scope for v1**
 
 - Python/pytest repair as the primary product claim.
-- OpenRouter/GLM-4.7 Flash as the real product model path.
+- OpenRouter/MiniMax M3 as the real product model path.
 - Fake model clients only for automated tests.
 - Parent model loop, diagnosis subagent loop, and review subagent loop.
 - Multiple small Python fixture scenarios.
@@ -305,11 +305,11 @@ This work touches the whole package: CLI defaults, model clients, runtime state,
 - **Risk: Live model runs become flaky or expensive.** Mitigate with deterministic offline tests, explicit live-eval opt-in, model-call budgets, cost tracing, and small fixtures.
 - **Risk: The fake path hides product gaps.** Mitigate by making OpenRouter the product and eval default and asserting fake usage only in automated tests.
 - **Risk: Subagents remain too shallow.** Mitigate with child contexts, scoped registries, independent model/tool budgets, and trace checks that prove child activity.
-- **Risk: GLM returns invalid structured output.** Mitigate with strict schemas, retry prompts, typed failures, and final failed reports.
+- **Risk: MiniMax returns invalid structured output.** Mitigate with strict schemas, retry prompts, typed failures, and final failed reports.
 - **Risk: Prompt caching support varies by provider route.** Mitigate by enabling/configuring it where supported and reporting observed metadata rather than guaranteed savings.
 - **Risk: More fixtures stretch the five-day scope.** Mitigate by adding two small focused fixtures instead of broad stack support.
 - **Dependency: OpenRouter API access.** Live product runs require `OPENROUTER_API_KEY`; offline tests must not.
-- **Dependency: GLM model ID.** The exact OpenRouter model identifier should be verified during implementation and kept configurable through env/CLI.
+- **Dependency: MiniMax model ID.** The exact OpenRouter model identifier should be verified during implementation and kept configurable through env/CLI.
 
 ---
 
