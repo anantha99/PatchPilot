@@ -1,7 +1,0 @@
-{
-  "goal": "Repair inverted age validation logic.",
-  "test_command": "pytest",
-  "expected_changed_files": ["user_rules/age.py"],
-  "expected_passing_command": "pytest",
-  "expected_risk_notes": ["Validation branch fix should not change the public function name."]
-}

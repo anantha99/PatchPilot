@@ -23,4 +23,4 @@ COPY PRD.md PRODUCT.md assignment.md ./
 
 RUN mkdir -p /workspace/tmp /workspace/tmp/pytest
 
-CMD ["python", "-m", "pytest", "-q"]
+CMD ["python", "-m", "pytest", "-q", "--capture=no"]

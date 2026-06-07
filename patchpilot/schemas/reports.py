@@ -1,4 +1,4 @@
-"""Report and runtime state schemas."""
+"""Final report and trace schemas that make repair runs auditable."""
 
 from __future__ import annotations
 
@@ -34,8 +34,14 @@ class TestRunReport(BaseModel):
 
 class RepairAttemptReport(BaseModel):
     attempt: int
-    result: Literal["passed", "failed"]
+    result: Literal["passed", "failed", "rejected", "budget_exhausted"]
     summary: str
+    changed_files: list[Path] = Field(default_factory=list)
+    semantic_validation: dict[str, Any] = Field(default_factory=dict)
+    targeted_test: dict[str, Any] = Field(default_factory=dict)
+    full_test: dict[str, Any] = Field(default_factory=dict)
+    failure_category: str | None = None
+    retry_rationale: str | None = None
 
 
 class FinalReport(BaseModel):
@@ -43,7 +49,7 @@ class FinalReport(BaseModel):
     status: Literal["success", "partial", "failed"]
     task_classification: str
     root_cause: str
-    patch_plan: dict[str, str]
+    patch_plan: dict[str, Any]
     changed_files: list[ChangedFileReport]
     attempts: list[RepairAttemptReport]
     tests_run: list[TestRunReport]
@@ -56,4 +62,10 @@ class FinalReport(BaseModel):
     model_usage_summary: dict[str, Any] = Field(default_factory=dict)
     estimated_cost: float | None = None
     cache_summary: dict[str, Any] = Field(default_factory=dict)
+    semantic_validation: list[dict[str, Any]] = Field(default_factory=list)
+    rejected_patch_plans: list[dict[str, Any]] = Field(default_factory=list)
+    retry_summary: dict[str, Any] = Field(default_factory=dict)
+    review_result: dict[str, Any] = Field(default_factory=dict)
+    trace_path: str | None = None
+    report_path: str | None = None
     failure_reason: str | None = None

@@ -1,4 +1,4 @@
-"""Shared schema types."""
+"""Shared schema primitives for paths, permissions, tools, and text outputs."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class ToolNamespace(StrEnum):
     GIT = "git"
     CODE = "code"
     EXEC = "exec"
-    MEMORY_EVAL = "memory_eval"
+    SESSION = "session"
     SUBAGENT = "subagent"
 
 
@@ -65,8 +65,16 @@ class FileContent(BaseModel):
     content: str
 
 
+class FileReadError(BaseModel):
+    path: Path
+    error_type: str
+    error: str
+
+
 class FileBundle(BaseModel):
     files: list[FileContent]
+    missing_files: list[Path] = Field(default_factory=list)
+    errors: list[FileReadError] = Field(default_factory=list)
 
 
 class SearchResult(BaseModel):
@@ -77,4 +85,3 @@ class SearchResult(BaseModel):
 
 class SearchResults(BaseModel):
     results: list[SearchResult] = Field(default_factory=list)
-

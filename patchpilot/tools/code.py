@@ -1,4 +1,4 @@
-"""Code inspection tools."""
+"""Code inspection and patch-plan validation tools."""
 
 from __future__ import annotations
 
@@ -16,13 +16,15 @@ from patchpilot.schemas.tool_io import (
     FindTestsOutput,
     ParseImportsInput,
     ParseImportsOutput,
+    PatchEdit,
     PatchValidationInput,
     PatchValidationOutput,
     SearchRegexInput,
     SearchTextInput,
     SummarizeFilesInput,
 )
-from patchpilot.tools.helpers import grep_regex, grep_text, read_text, rel_path, repo_path
+from patchpilot.adapters.python_pytest import PythonPytestAdapter
+from patchpilot.tools.helpers import grep_regex, grep_text, iter_repo_files, read_text, rel_path, repo_path
 from patchpilot.tools.registry import ToolContext, ToolRegistry
 
 
@@ -49,11 +51,10 @@ def register(registry: ToolRegistry) -> None:
     async def detect_language(input: PathInput, context: ToolContext) -> DetectLanguageOutput:
         root = repo_path(Path(context.repo_root), input.path)
         counts = Counter()
-        for path in root.rglob("*"):
-            if path.is_file() and ".git" not in path.parts:
-                language = LANG_EXTENSIONS.get(path.suffix)
-                if language:
-                    counts[language] += 1
+        for path in iter_repo_files(root):
+            language = LANG_EXTENSIONS.get(path.suffix)
+            if language:
+                counts[language] += 1
         primary = counts.most_common(1)[0][0] if counts else None
         return DetectLanguageOutput(languages=dict(counts), primary_language=primary)
 
@@ -91,9 +92,8 @@ def register(registry: ToolRegistry) -> None:
         root = repo_path(Path(context.repo_root), input.path)
         files = [
             rel_path(Path(context.repo_root), path)
-            for path in root.rglob("*")
+            for path in iter_repo_files(root)
             if path.is_file()
-            and ".git" not in path.parts
             and (path.name.startswith("test_") or path.name.endswith("_test.py") or path.name.endswith(".test.ts") or path.name.endswith("_test.go"))
         ]
         return FindTestsOutput(test_files=files)
@@ -198,9 +198,21 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def map_test_to_source(input: PathInput, context: ToolContext) -> SearchResults:
+        root = Path(context.repo_root)
+        candidates = PythonPytestAdapter().source_candidates_for_test(root, Path(input.path))
+        results: list[SearchResult] = [
+            SearchResult(file_path=path, line=1, snippet="import-linked source candidate")
+            for path in candidates
+        ]
+        seen = {result.file_path.as_posix() for result in results}
         stem = Path(input.path).stem.replace("test_", "")
-        rows = grep_text(Path(context.repo_root), stem, 20)
-        return SearchResults(results=[SearchResult(file_path=rel_path(Path(context.repo_root), p), line=line, snippet=s) for p, line, s in rows])
+        for path, line, snippet in grep_text(root, stem, 20):
+            rel = rel_path(root, path)
+            if rel.as_posix() in seen or _is_test_path(rel) or rel.suffix != ".py":
+                continue
+            seen.add(rel.as_posix())
+            results.append(SearchResult(file_path=rel, line=line, snippet=snippet))
+        return SearchResults(results=results[:20])
 
     @registry.tool(
         name="code.validate_patch_shape",
@@ -211,8 +223,19 @@ def register(registry: ToolRegistry) -> None:
         permission=Permission.READ,
     )
     async def validate_patch_shape(input: PatchValidationInput, context: ToolContext) -> PatchValidationOutput:
+        # This read-only tool is the write gate for source fixes. It rejects
+        # unsafe paths, test edits, ambiguous structured edits, and weak
+        # multi-file rationale before fs.apply_patch receives anything.
         reasons: list[str] = []
+        semantic_reasons: list[str] = []
         root = Path(context.repo_root)
+        patch_plan = input.patch_plan or {}
+        patch_text = input.patch or str(patch_plan.get("patch") or patch_plan.get("unified_diff") or "")
+        structured_edits = input.structured_edits
+        if not structured_edits and patch_plan.get("edits"):
+            structured_edits = [PatchEdit.model_validate(edit) for edit in patch_plan.get("edits", [])]
+        evidence_refs = input.evidence_refs or list(patch_plan.get("evidence_refs") or [])
+        root_cause = input.root_cause or str(patch_plan.get("root_cause") or "")
         normalized_targets: list[Path] = []
         for target in input.target_files:
             try:
@@ -226,26 +249,94 @@ def register(registry: ToolRegistry) -> None:
                 if rel.as_posix() == protected_text or rel.as_posix().startswith(f"{protected_text}/"):
                     reasons.append(f"protected path: {rel}")
         patch_lines = 0
-        if input.patch:
-            patch_lines = len([line for line in input.patch.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))])
+        patch_targets: list[Path] = []
+        normalized_patch_targets: list[Path] = []
+        if patch_text:
+            patch_lines = len([line for line in patch_text.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))])
             if patch_lines > input.max_diff_lines:
                 reasons.append(f"diff too large: {patch_lines} lines exceeds {input.max_diff_lines}")
-            patch_targets = _changed_paths_from_patch_text(input.patch)
+            patch_targets = _changed_paths_from_patch_text(patch_text)
             for target in patch_targets:
                 try:
                     rel = rel_path(root, repo_path(root, target))
+                    normalized_patch_targets.append(rel)
                     for protected in input.protected_paths:
                         protected_text = protected.as_posix().rstrip("/")
                         if rel.as_posix() == protected_text or rel.as_posix().startswith(f"{protected_text}/"):
                             reasons.append(f"protected path: {rel}")
                     if rel not in normalized_targets:
                         reasons.append(f"patch touches undeclared file: {rel}")
+                    if _is_binary_path(root, rel):
+                        reasons.append(f"binary file edit rejected: {rel}")
                 except Exception:
                     reasons.append(f"path escapes repo: {target}")
+        if normalized_targets and not input.allow_test_only:
+            test_targets = [path for path in normalized_targets if _is_test_path(path)]
+            if test_targets:
+                reasons.append(f"test edits rejected: {', '.join(path.as_posix() for path in test_targets)}")
+        edit_paths = _normalize_edit_paths(root, structured_edits, reasons)
+        _validate_structured_edits(root, structured_edits, edit_paths, input, reasons, semantic_reasons)
+        if structured_edits and normalized_patch_targets:
+            # Hybrid plans must agree: structured edits are used for precise
+            # writes, while the diff proves the same file-level intent.
+            if set(edit_paths) != set(normalized_patch_targets):
+                reasons.append(
+                    "structured edits and unified diff touch different files: "
+                    f"structured={sorted(path.as_posix() for path in edit_paths)} "
+                    f"diff={sorted(path.as_posix() for path in normalized_patch_targets)}"
+            )
+            for edit in structured_edits:
+                try:
+                    rel = rel_path(root, repo_path(root, edit.path))
+                except Exception:
+                    continue
+                if rel in normalized_patch_targets and not _diff_contains_edit(patch_text, edit):
+                    reasons.append(f"structured edit does not match unified diff intent: {rel}")
+        changed_files = normalized_patch_targets or edit_paths or normalized_targets
+        if normalized_targets:
+            for edit_path in edit_paths:
+                if edit_path not in normalized_targets:
+                    reasons.append(f"structured edit touches undeclared file: {edit_path}")
+        changed_set = set(changed_files)
+        if normalized_targets:
+            missing_concrete_edits = sorted(path.as_posix() for path in set(normalized_targets) - changed_set)
+            if missing_concrete_edits:
+                reasons.append(f"target file lacks concrete edit: {', '.join(missing_concrete_edits)}")
+        # Multi-file repairs need evidence and a shared root cause; otherwise a
+        # model can accidentally bundle unrelated changes into one patch.
+        if changed_files and not evidence_refs:
+            semantic_reasons.append("changed files require evidence_refs")
+        if len(changed_files) > 1 and not root_cause.strip():
+            semantic_reasons.append("multi-file patch requires shared root_cause")
+        for edit in structured_edits:
+            try:
+                rel = rel_path(root, repo_path(root, edit.path))
+            except Exception:
+                continue
+            edit_evidence = edit.evidence_refs or evidence_refs
+            if not edit_evidence:
+                semantic_reasons.append(f"missing evidence link for changed file: {rel}")
+            if len(changed_files) > 1 and not (edit.root_cause_linkage or root_cause).strip():
+                semantic_reasons.append(f"missing same-root-cause linkage for changed file: {rel}")
         if normalized_targets and not input.allow_test_only and all(_is_test_path(path) for path in normalized_targets):
-            reasons.append("test-only patch rejected for source_fix task")
-        output = PatchValidationOutput(valid=len(reasons) == 0, reasons=reasons, target_files=normalized_targets, diff_lines=patch_lines)
+            reasons.append("test-only patch rejected")
+        reasons.extend(semantic_reasons)
+        output = PatchValidationOutput(
+            valid=len(reasons) == 0,
+            reasons=reasons,
+            target_files=normalized_targets,
+            changed_files=changed_files,
+            diff_lines=patch_lines,
+            semantic_reasons=semantic_reasons,
+        )
         context.artifacts["patch_validation"] = output.model_dump(mode="json")
+        if not output.valid:
+            context.artifacts.setdefault("rejected_patch_plans", []).append(
+                {
+                    "patch_plan": patch_plan,
+                    "validation": output.model_dump(mode="json"),
+                }
+            )
         return output
 
     @registry.tool(
@@ -273,3 +364,83 @@ def _changed_paths_from_patch_text(patch: str) -> list[Path]:
 def _is_test_path(path: Path) -> bool:
     text = path.as_posix()
     return "/tests/" in f"/{text}" or path.name.startswith("test_") or path.name.endswith("_test.py")
+
+
+def _normalize_edit_paths(root: Path, edits: list, reasons: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for edit in edits:
+        try:
+            paths.append(rel_path(root, repo_path(root, edit.path)))
+        except Exception:
+            reasons.append(f"path escapes repo: {edit.path}")
+    return paths
+
+
+def _validate_structured_edits(
+    root: Path,
+    edits: list[PatchEdit],
+    edit_paths: list[Path],
+    input: PatchValidationInput,
+    reasons: list[str],
+    semantic_reasons: list[str],
+) -> None:
+    for edit, rel in zip(edits, edit_paths):
+        protected_hit = _protected_path_reason(rel, input.protected_paths)
+        if protected_hit:
+            reasons.append(protected_hit)
+        if _is_binary_path(root, rel):
+            reasons.append(f"binary file edit rejected: {rel}")
+        if not input.allow_test_only and _is_test_path(rel):
+            reasons.append(f"test edits rejected: {rel}")
+        if not edit.before:
+            reasons.append(f"structured edit missing SEARCH text: {rel}")
+            continue
+        target = repo_path(root, rel)
+        if not target.exists():
+            reasons.append(f"structured edit target missing: {rel}")
+            continue
+        text = target.read_text(encoding="utf-8", errors="replace")
+        count = _search_count(text, edit.before)
+        if count == 0:
+            reasons.append(f"structured edit SEARCH text not found: {rel}")
+        elif count > 1:
+            reasons.append(f"ambiguous structured edit SEARCH text occurs {count} times: {rel}")
+        if edit.before == edit.after:
+            reasons.append(f"structured edit is a no-op: {rel}")
+        if not (edit.evidence_refs or input.evidence_refs):
+            semantic_reasons.append(f"missing evidence link for changed file: {rel}")
+        if not (edit.root_cause_linkage or input.root_cause).strip():
+            semantic_reasons.append(f"missing same-root-cause linkage for changed file: {rel}")
+
+
+def _protected_path_reason(path: Path, protected_paths: list[Path]) -> str | None:
+    for protected in protected_paths:
+        protected_text = protected.as_posix().rstrip("/")
+        if path.as_posix() == protected_text or path.as_posix().startswith(f"{protected_text}/"):
+            return f"protected path: {path}"
+    return None
+
+
+def _search_count(text: str, search: str) -> int:
+    count = text.count(search)
+    if count:
+        return count
+    return text.replace("\r\n", "\n").count(search.replace("\r\n", "\n"))
+
+
+def _diff_contains_edit(patch: str, edit) -> bool:
+    removed = [line for line in edit.before.splitlines() if line.strip()]
+    added = [line for line in edit.after.splitlines() if line.strip()]
+    diff_removed = [line[1:].strip() for line in patch.splitlines() if line.startswith("-") and not line.startswith("---")]
+    diff_added = [line[1:].strip() for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    removed_ok = not removed or any(line.strip() in diff_removed for line in removed)
+    added_ok = not added or any(line.strip() in diff_added for line in added)
+    return removed_ok and added_ok
+
+
+def _is_binary_path(root: Path, path: Path) -> bool:
+    target = repo_path(root, path)
+    if not target.exists() or not target.is_file():
+        return False
+    data = target.read_bytes()[:1024]
+    return b"\0" in data

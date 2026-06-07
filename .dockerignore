@@ -3,10 +3,14 @@
 venv
 env
 __pycache__
+**/__pycache__
 *.pyc
 .pytest_cache
+**/.pytest_cache
 .mypy_cache
+**/.mypy_cache
 .ruff_cache
+**/.ruff_cache
 .coverage
 htmlcov
 build

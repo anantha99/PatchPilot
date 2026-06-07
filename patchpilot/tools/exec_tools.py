@@ -1,12 +1,14 @@
-"""Command execution tools with explicit risk policy."""
+"""Command execution tools with permission checks and command history capture."""
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 
+from patchpilot.errors import PolicyError
 from patchpilot.schemas.common import CommandRisk, EmptyInput, Permission, ToolNamespace
 from patchpilot.schemas.tool_io import (
     CommandExistsInput,
@@ -41,12 +43,59 @@ async def _run(input: RunCommandInput, context: ToolContext) -> CommandOutput:
     return output
 
 
+def _validate_blind_test_command(command: str) -> None:
+    normalized = command.strip()
+    lower = normalized.lower()
+    forbidden_markers = (
+        "..",
+        ".patchpilot",
+        "fixture.json",
+        "suites.json",
+        "patchpilot/evals",
+        "patchpilot\\evals",
+        "cmd",
+        "powershell",
+        "pwsh",
+        "type ",
+        "cat ",
+        "more ",
+        "dir ",
+        "copy ",
+        "python -c",
+        "py -c",
+        "&&",
+        "||",
+        "|",
+        ";",
+        ">",
+        "<",
+        "$(",
+        "`",
+    )
+    if any(marker in lower for marker in forbidden_markers):
+        raise PolicyError(f"Blind eval test execution only allows pytest targets inside the copied repo: {command}")
+    if lower == "pytest" or lower.startswith("pytest "):
+        return
+    if re.match(r'^"?[^"]*python(?:\.exe)?"?\s+-m\s+pytest(?:\s|$)', normalized, flags=re.IGNORECASE):
+        return
+    raise PolicyError(f"Blind eval test execution only allows pytest commands: {command}")
+
+
 def _normalize_command(command: str) -> str:
+    pytest_capture_arg = _pytest_capture_arg(command)
     if command == "pytest":
-        return f'"{sys.executable}" -m pytest'
+        return f'"{sys.executable}" -m pytest{pytest_capture_arg}'
     if command.startswith("pytest "):
-        return f'"{sys.executable}" -m pytest {command.removeprefix("pytest ")}'
+        return f'"{sys.executable}" -m pytest{pytest_capture_arg} {command.removeprefix("pytest ")}'
     return command
+
+
+def _pytest_capture_arg(command: str) -> str:
+    if os.environ.get("PATCHPILOT_PYTEST_NO_CAPTURE", "").lower() not in {"1", "true", "yes"}:
+        return ""
+    if "-s" in command.split() or "--capture=" in command or "--capture " in command:
+        return ""
+    return " --capture=no"
 
 
 def _risk_level(risk: CommandRisk) -> int:
@@ -79,6 +128,8 @@ def register(registry: ToolRegistry) -> None:
     )
     async def run_tests(input: TestCommandInput, context: ToolContext) -> CommandOutput:
         command = input.command or detect_test_command(Path(context.repo_root)) or "pytest"
+        if getattr(context.config, "blind_eval", False):
+            _validate_blind_test_command(command)
         return await _run(RunCommandInput(command=command), context)
 
     @registry.tool(
@@ -96,6 +147,8 @@ def register(registry: ToolRegistry) -> None:
             command = f"pytest {input.target}"
         else:
             command = "pytest"
+        if getattr(context.config, "blind_eval", False):
+            _validate_blind_test_command(command)
         return await _run(RunCommandInput(command=command), context)
 
     @registry.tool(

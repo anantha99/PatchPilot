@@ -11,11 +11,12 @@ x-xarc-base: &xarc-base
     TEMP: /workspace/tmp
     TMP: /workspace/tmp
     PYTEST_DEBUG_TEMPROOT: /workspace/tmp/pytest
+    PATCHPILOT_PYTEST_NO_CAPTURE: "1"
 
 services:
   xarc-test:
     <<: *xarc-base
-    command: python -m pytest -q
+    command: python -m pytest -q --capture=no
 
   xarc-smoke:
     <<: *xarc-base
@@ -23,7 +24,7 @@ services:
 
   xarc-live-eval:
     <<: *xarc-base
-    command: python -m patchpilot.cli eval --suite smoke --repo fixtures/buggy-python-repo --live-eval
+    command: python -m patchpilot.cli eval --suite smoke --repo fixtures/mock-store-python --live-eval
     env_file:
       - .env
 

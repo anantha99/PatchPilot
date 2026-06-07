@@ -1,4 +1,4 @@
-"""Generic supplied-command adapter."""
+"""Adapter for user-supplied validation commands outside Python-specific flows."""
 
 from __future__ import annotations
 

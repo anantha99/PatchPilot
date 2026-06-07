@@ -7,7 +7,7 @@ topic: patchpilot-v1-real-model-repair
 
 ## Summary
 
-PatchPilot v1 should be a real GLM-driven Python/pytest repair agent, not a deterministic demo path. It should use OpenRouter with GLM-4.7 Flash for product runs and eval runs, while preserving mocked models only for automated tests.
+PatchPilot v1 should be a real MiniMax-driven Python/pytest repair agent, not a deterministic demo path. It should use OpenRouter with MiniMax M3 for product runs and eval runs, while preserving mocked models only for automated tests.
 
 ---
 
@@ -21,11 +21,11 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 
 ## Key Decisions
 
-- **Real model path is the product path.** Normal `patchpilot run` should use OpenRouter with GLM-4.7 Flash. Fake or mocked model clients remain test infrastructure, not the product experience.
+- **Real model path is the product path.** Normal `patchpilot run` should use OpenRouter with MiniMax M3. Fake or mocked model clients remain test infrastructure, not the product experience.
 - **Python/pytest is the reliability wedge.** v1 should make strong claims only for Python/pytest repair. Generic command support may remain, but it should not dilute the Python path.
-- **Model reasoning, tool-verified evidence.** GLM should drive diagnosis, patch planning, tool selection, review, and retry choices. Tools still execute and verify concrete facts: file reads, test results, diffs, patch application, permissions, and traces.
+- **Model reasoning, tool-verified evidence.** MiniMax should drive diagnosis, patch planning, tool selection, review, and retry choices. Tools still execute and verify concrete facts: file reads, test results, diffs, patch application, permissions, and traces.
 - **Assignment proof is load-bearing.** The five assignment properties should appear in the actual repair flow, not as side demos or isolated unit tests.
-- **Budget is managed, not avoided.** GLM calls are allowed, but v1 should track model calls, token usage, estimated cost, and cache behavior so the user can see what the repair cost.
+- **Budget is managed, not avoided.** MiniMax calls are allowed, but v1 should track model calls, token usage, estimated cost, and cache behavior so the user can see what the repair cost.
 
 ---
 
@@ -33,7 +33,7 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 
 - A1. **Developer user.** Runs PatchPilot on a local Python/pytest repository with a failing test and reviews the final report.
 - A2. **Parent repair agent.** Owns phase order, context strategy, tool registry filtering, permissions, retries, and final reporting.
-- A3. **GLM-4.7 Flash model.** Selects tools and returns structured decisions through OpenRouter.
+- A3. **MiniMax M3 model.** Selects tools and returns structured decisions through OpenRouter.
 - A4. **Diagnosis subagent.** Runs in an isolated context with scoped tools and returns structured root-cause evidence.
 - A5. **Review subagent.** Runs in an isolated context with scoped diff/test tools and returns structured approval or issues.
 - A6. **Assignment reviewer.** Reads the repository, commit history, traces, eval output, and `MEMO.md`.
@@ -45,7 +45,7 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 - F1. **Real model repair run**
   - **Trigger:** Developer runs PatchPilot against a local Python/pytest repo with `--allow-exec` and `--allow-write`.
   - **Actors:** A1, A2, A3, A4, A5.
-  - **Steps:** Parent agent inspects the repo, reproduces the failure, asks GLM to choose evidence-gathering tools, spawns diagnosis, creates a patch plan, validates write safety, applies the patch, reruns tests, spawns review, and emits a final report.
+  - **Steps:** Parent agent inspects the repo, reproduces the failure, asks MiniMax M3 to choose evidence-gathering tools, spawns diagnosis, creates a patch plan, validates write safety, applies the patch, reruns tests, spawns review, and emits a final report.
   - **Outcome:** The failing test becomes passing or the run ends with a useful failed report and trace.
 
 - F2. **Subagent diagnosis**
@@ -72,8 +72,8 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 
 **Real Model Execution**
 
-- R1. Normal product runs use OpenRouter with GLM-4.7 Flash as the default real model path.
-- R2. Fake or mocked model clients are retained only for automated unit/integration tests; eval runs use the real OpenRouter/GLM path.
+- R1. Normal product runs use OpenRouter with MiniMax M3 as the default real model path.
+- R2. Fake or mocked model clients are retained only for automated unit/integration tests; eval runs use the real OpenRouter/MiniMax path.
 - R3. Model responses are structured and validated before use; invalid model output produces typed errors and trace events.
 - R4. Model calls are traced with model name, phase, status, duration, retry metadata, token usage when available, and estimated cost when available.
 - R5. Prompt caching is supported when OpenRouter/model/provider configuration allows it, and traces expose whether cache-related metadata was observed.
@@ -105,14 +105,14 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 **Submission Readiness**
 
 - R21. The repository can be made public without leaking secrets, local paths beyond normal traces, or API keys.
-- R22. The walkthrough can demonstrate a real GLM-driven run, a substantive code path, and one moment where user/model direction diverged.
+- R22. The walkthrough can demonstrate a real MiniMax-driven run, a substantive code path, and one moment where user/model direction diverged.
 - R23. The submitted traces include Codex session export plus PatchPilot runtime traces for the demo/eval run.
 
 ---
 
 ## Acceptance Examples
 
-- AE1. **Covers R1, R3, R4.** Given `OPENROUTER_API_KEY` is set, when `patchpilot run` starts, then the trace records GLM-4.7 Flash model calls and validated structured tool selections before tool execution.
+- AE1. **Covers R1, R3, R4.** Given `OPENROUTER_API_KEY` is set, when `patchpilot run` starts, then the trace records MiniMax M3 model calls and validated structured tool selections before tool execution.
 - AE2. **Covers R6, R7, R8.** Given a Python fixture with a real failing pytest test, when PatchPilot runs with write/exec permissions, then it diagnoses evidence, creates a bounded patch plan, applies a source patch, and gets pytest passing.
 - AE3. **Covers R9, R10.** Given the first patch fails validation, when PatchPilot continues, then it records the failed validation, gathers new evidence or revises the plan, and the final report includes the failed attempt.
 - AE4. **Covers R13.** Given a reproduced failure, when diagnosis starts, then `subagent.spawn_diagnosis` creates an isolated child context, runs scoped model/tool calls, and returns typed evidence to the parent.
@@ -123,8 +123,8 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 
 ## Success Criteria
 
-- The final submission demo shows a real GLM-driven repair path, not only a fake-model fixture.
-- The deterministic/mocked test suite still runs without OpenRouter access, while eval runs require the real OpenRouter/GLM path.
+- The final submission demo shows a real MiniMax-driven repair path, not only a fake-model fixture.
+- The deterministic/mocked test suite still runs without OpenRouter access, while eval runs require the real OpenRouter/MiniMax path.
 - The live-model repair path is reliable enough for a three-to-five-minute walkthrough.
 - Eval output proves the five assignment properties from traces and reports.
 - The commit history shows meaningful progression from v0 proof to v1 product hardening.
@@ -136,7 +136,7 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 **In scope for v1**
 
 - Python/pytest repair as the primary product claim.
-- GLM-4.7 Flash through OpenRouter for product runs.
+- MiniMax M3 through OpenRouter for product runs.
 - Real parent model loop and real diagnosis/review subagent model loops.
 - Multiple Python fixture scenarios.
 - Prompt caching support when provider metadata/configuration makes it available.
@@ -163,9 +163,9 @@ The old `PRD.md` should be treated as the v0/Vebo proof document. The v1 source 
 ## Dependencies And Assumptions
 
 - D1. OpenRouter access is available through `OPENROUTER_API_KEY`.
-- D2. The selected model is `z-ai/glm-4.7-flash` unless explicitly changed.
+- D2. The selected model is `minimax/minimax-m3` unless explicitly changed.
 - D3. Prompt caching support may vary by OpenRouter provider; v1 should expose observed cache metadata rather than promising savings.
-- D4. The final demo repository should be small enough for GLM-4.7 Flash to reason over within budget and context limits.
+- D4. The final demo repository should be small enough for MiniMax M3 to reason over within budget and context limits.
 - D5. Mocked models remain necessary for CI-style tests because live model calls are nondeterministic, network-dependent, and paid; they are not used as the final eval path.
 
 ---

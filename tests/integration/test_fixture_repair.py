@@ -1,12 +1,16 @@
+"""Integration coverage for end-to-end fixture repair through the runtime."""
+
 from pathlib import Path
 import asyncio
+import json
 import shutil
 import sys
 
 from patchpilot.config import PatchPilotConfig
 from patchpilot.models.base import ModelClient, ModelJsonResponse, ToolSelection
-from patchpilot.models.fake import FakeModelClient
+from patchpilot.models.openrouter import OpenRouterModelClient
 from patchpilot.runtime.graph import RepairRuntime
+from tests.support.openrouter_mock import SchemaAwareOpenRouterTransport
 
 
 COPY_IGNORE = shutil.ignore_patterns(".patchpilot", ".pytest_cache", "__pycache__")
@@ -19,7 +23,7 @@ class CommandOnlyModel(ModelClient):
 
     async def select_tool(self, state, tools):
         script = [
-            ToolSelection(tool_name="memory_eval.mark_phase", arguments={"phase": "reproduce"}, rationale="start reproduce"),
+            ToolSelection(tool_name="session.mark_phase", arguments={"phase": "reproduce"}, rationale="start reproduce"),
             ToolSelection(tool_name="exec.run_tests", arguments={"command": self.command}, rationale="run supplied command"),
         ]
         if self.index >= len(script):
@@ -37,34 +41,34 @@ class MockStoreModel(ModelClient):
 
     async def select_tool(self, state, tools):
         script = [
-            ("memory_eval.mark_phase", {"phase": "inspect"}, "start inspect"),
+            ("session.mark_phase", {"phase": "inspect"}, "start inspect"),
             ("fs.list_dir", {"path": "."}, "list files"),
             ("code.detect_language", {"path": "."}, "detect language"),
             ("code.detect_package_manager", {"path": "."}, "detect package manager"),
             ("code.find_tests", {"path": "."}, "find tests"),
             ("exec.detect_test_command", {}, "detect pytest"),
-            ("memory_eval.mark_phase", {"phase": "reproduce"}, "start reproduce"),
+            ("session.mark_phase", {"phase": "reproduce"}, "start reproduce"),
             ("exec.run_tests", {"command": "pytest"}, "reproduce failure"),
-            ("memory_eval.mark_phase", {"phase": "diagnose"}, "start diagnose"),
+            ("session.mark_phase", {"phase": "diagnose"}, "start diagnose"),
             ("code.extract_failure_locations", {"output": state.last_command_output}, "extract locations"),
             ("subagent.spawn_diagnosis", {"task": "diagnose mock-store pytest failure", "context": {"output": state.last_command_output}}, "diagnose"),
-            ("memory_eval.record_observation", {"text": "pricing discount failure reproduced", "tags": ["diagnosis"]}, "record observation"),
-            ("memory_eval.mark_phase", {"phase": "plan_patch"}, "start patch planning"),
+            ("session.record_observation", {"text": "pricing discount failure reproduced", "tags": ["diagnosis"]}, "record observation"),
+            ("session.mark_phase", {"phase": "plan_patch"}, "start patch planning"),
             ("code.map_test_to_source", {"path": "tests/test_pricing.py"}, "map pricing test"),
             ("fs.read_file", {"path": "mock_store/pricing.py"}, "read source"),
             ("fs.read_file", {"path": "tests/test_pricing.py"}, "read test"),
             ("fs.apply_patch", {"patch": ""}, "apply validated model patch"),
-            ("memory_eval.mark_phase", {"phase": "validate"}, "start validation"),
+            ("session.mark_phase", {"phase": "validate"}, "start validation"),
             ("exec.run_targeted_tests", {"command": "pytest tests/test_pricing.py"}, "targeted tests"),
             ("exec.run_tests", {"command": "pytest"}, "full tests"),
             ("git.diff", {}, "capture diff"),
-            ("memory_eval.mark_phase", {"phase": "review"}, "start review"),
+            ("session.mark_phase", {"phase": "review"}, "start review"),
             ("subagent.spawn_review", {"task": "review final mock-store patch", "context": {"diff": state.last_text_output}}, "review"),
-            ("memory_eval.summarize_context", {"observations": ["model patch applied", "tests passed"], "max_chars": 1000}, "summarize"),
-            ("memory_eval.retrieve_artifacts", {"keys": ["patch_plan", "subagents", "phases"]}, "retrieve"),
-            ("memory_eval.mark_phase", {"phase": "report"}, "start report"),
+            ("session.summarize_context", {"observations": ["model patch applied", "tests passed"], "max_chars": 1000}, "summarize"),
+            ("session.retrieve_artifacts", {"keys": ["patch_plan", "subagents", "phases"]}, "retrieve"),
+            ("session.mark_phase", {"phase": "report"}, "start report"),
             ("exec.command_history", {}, "commands"),
-            ("memory_eval.export_session", {}, "export"),
+            ("session.export_session", {}, "export"),
         ]
         if self.index >= len(script):
             return ToolSelection(finish=True, rationale="done")
@@ -102,7 +106,7 @@ class MockStoreModel(ModelClient):
                     "task_classification": "source_fix",
                     "root_cause": "apply_discount subtracts percent points from price instead of computing a percentage discount",
                     "evidence_refs": ["tests/test_pricing.py", "mock_store/pricing.py"],
-                    "expected_changed_files": ["mock_store/pricing.py"],
+                    "planned_changed_files": ["mock_store/pricing.py"],
                     "edits": [
                         {
                             "path": "mock_store/pricing.py",
@@ -148,13 +152,13 @@ class EarlyFinishMockStoreModel(MockStoreModel):
 class PrematurePatchValidationModel(MockStoreModel):
     async def select_tool(self, state, tools):
         script = [
-            ("memory_eval.mark_phase", {"phase": "reproduce"}, "start reproduce"),
+            ("session.mark_phase", {"phase": "reproduce"}, "start reproduce"),
             ("exec.run_tests", {"command": "pytest"}, "reproduce failure"),
-            ("memory_eval.mark_phase", {"phase": "diagnose"}, "start diagnose"),
+            ("session.mark_phase", {"phase": "diagnose"}, "start diagnose"),
             ("code.extract_failure_locations", {"output": state.last_command_output}, "extract locations"),
             ("subagent.spawn_diagnosis", {"task": "diagnose mock-store pytest failure", "context": {"output": state.last_command_output}}, "diagnose"),
-            ("memory_eval.record_observation", {"text": "pricing discount failure reproduced", "tags": ["diagnosis"]}, "record observation"),
-            ("memory_eval.mark_phase", {"phase": "plan_patch"}, "start patch planning"),
+            ("session.record_observation", {"text": "pricing discount failure reproduced", "tags": ["diagnosis"]}, "record observation"),
+            ("session.mark_phase", {"phase": "plan_patch"}, "start patch planning"),
             ("fs.read_file", {"path": "mock_store/pricing.py"}, "read source"),
             (
                 "code.validate_patch_shape",
@@ -178,11 +182,63 @@ def test_fixture_repair_produces_success_report(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     shutil.copytree(source, repo, ignore=COPY_IGNORE)
     config = PatchPilotConfig(repo=repo, trace_dir=tmp_path / "traces", allow_write=True, allow_exec=True)
+    model_config = config.model_copy(update={"openrouter_api_key": "sk-test"})
+    transport = SchemaAwareOpenRouterTransport(
+        structured={
+            "DiagnosisResult": [
+                {
+                    "root_cause": "add subtracts instead of adding",
+                    "evidence": {},
+                    "evidence_links": ["tests/test_calculator.py", "buggy_math/calculator.py"],
+                    "implicated_files": ["buggy_math/calculator.py"],
+                    "shared_root_cause": "calculator implementation violates add contract",
+                    "recommended_patch_direction": "return a + b",
+                    "confidence": 0.9,
+                    "risks": [],
+                }
+            ],
+            "PatchPlan": [
+                {
+                    "task_classification": "source_fix",
+                    "root_cause": "add subtracts instead of adding",
+                    "evidence_refs": ["tests/test_calculator.py", "buggy_math/calculator.py"],
+                    "planned_changed_files": ["buggy_math/calculator.py"],
+                    "edits": [
+                        {
+                            "path": "buggy_math/calculator.py",
+                            "before": "return a - b",
+                            "after": "return a + b",
+                            "evidence_refs": ["tests/test_calculator.py", "buggy_math/calculator.py"],
+                            "purpose": "Repair add contract",
+                            "expected_validation": ["pytest tests/test_calculator.py", "pytest"],
+                            "root_cause_linkage": "same add contract",
+                        }
+                    ],
+                    "patch": "",
+                    "summary": "Return the sum from add.",
+                }
+            ],
+            "ReviewResult": [
+                {
+                    "approved": True,
+                    "issues": [],
+                    "evidence": {},
+                    "regression_risk": "low",
+                    "missing_validation": [],
+                    "changed_file_necessity": {"buggy_math/calculator.py": "contains add implementation"},
+                    "blocking": False,
+                    "confidence": 0.9,
+                }
+            ],
+        }
+    )
 
-    report = asyncio.run(RepairRuntime(config, FakeModelClient()).run("repair failing pytest", "pytest"))
+    report = asyncio.run(RepairRuntime(config, OpenRouterModelClient(model_config, transport=transport)).run("repair failing pytest", "pytest"))
 
     assert report.status == "success"
     assert report.trace_id
+    assert report.report_path
+    assert json.loads(Path(report.report_path).read_text(encoding="utf-8"))["report_path"] == report.report_path
     assert report.subagents
     assert (repo / "buggy_math" / "calculator.py").read_text(encoding="utf-8").strip().endswith("return a + b")
 
@@ -231,7 +287,7 @@ def test_mock_store_repair_recovers_from_premature_model_finish(tmp_path: Path) 
 
     assert report.status == "success"
     assert report.tool_calls >= 20
-    assert any(event.event_type == "runtime.scaffolded_tool_selection" for event in events)
+    assert any(event.event_type == "runtime.workflow_guardrail_selection" for event in events)
     assert any(event.event_type == "model.patch_plan" for event in events)
     assert [item.path.as_posix() for item in report.changed_files] == ["mock_store/pricing.py"]
 

@@ -1,3 +1,5 @@
+"""Tool executor tests for typed validation, retries, policy, and tracing."""
+
 from pathlib import Path
 import asyncio
 

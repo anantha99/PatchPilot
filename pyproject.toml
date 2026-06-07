@@ -29,5 +29,8 @@ patchpilot = "patchpilot.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["patchpilot"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"patchpilot/evals/manifests/suites.json" = "patchpilot/evals/manifests/suites.json"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

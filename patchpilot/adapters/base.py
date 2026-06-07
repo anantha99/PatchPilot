@@ -1,4 +1,4 @@
-"""Stack adapter contracts."""
+"""Stack adapter contracts for detecting and running repository validation."""
 
 from __future__ import annotations
 

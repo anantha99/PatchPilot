@@ -1,4 +1,4 @@
-"""JSONL trace storage."""
+"""JSONL trace storage for model, tool, subagent, and report events."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class TraceStore:
             name=name,
             duration_ms=duration_ms,
             status=status,
-            payload={"ts": time.time(), **(payload or {})},
+            payload=_sanitize_payload({"ts": time.time(), **(payload or {})}),
         )
         path = self.trace_dir / f"{trace_id}.jsonl"
         with path.open("a", encoding="utf-8") as handle:
@@ -57,3 +57,26 @@ class TraceStore:
             if line.strip()
         ]
 
+
+def _sanitize_payload(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if (
+                "api_key" in key_text
+                or "secret" in key_text
+                or key_text == "authorization"
+                or key_text.endswith("_access_token")
+                or key_text.endswith("_refresh_token")
+                or key_text.endswith("_bearer_token")
+            ):
+                sanitized[key] = "[redacted]"
+            else:
+                sanitized[key] = _sanitize_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_payload(item) for item in value]
+    if isinstance(value, str) and any(marker in value.lower() for marker in ("openrouter_api_key=", "authorization: bearer", "sk-")):
+        return "[redacted]"
+    return value

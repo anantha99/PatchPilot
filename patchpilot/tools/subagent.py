@@ -1,4 +1,4 @@
-"""Tools that spawn isolated PatchPilot subagents."""
+"""Tool wrappers that spawn scoped PatchPilot diagnosis and review subagents."""
 
 from __future__ import annotations
 

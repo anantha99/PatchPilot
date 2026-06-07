@@ -1,0 +1,202 @@
+{
+  "fixtures": [
+    {
+      "name": "buggy-python-repo",
+      "suite": "smoke",
+      "repo_path": "fixtures/buggy-python-repo",
+      "bug_shape": "single-file arithmetic operator bug",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["buggy_math/calculator.py"],
+      "allowed_changed_files": ["buggy_math/calculator.py"],
+      "minimum_changed_files": 1,
+      "labels": ["demo", "mocked-openrouter"]
+    },
+    {
+      "name": "buggy-parser-repo",
+      "suite": "smoke",
+      "repo_path": "fixtures/buggy-parser-repo",
+      "bug_shape": "single-file parser delimiter and whitespace bug",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["csv_tools/parser.py"],
+      "allowed_changed_files": ["csv_tools/parser.py"],
+      "minimum_changed_files": 1,
+      "labels": ["demo", "parser"]
+    },
+    {
+      "name": "buggy-validation-repo",
+      "suite": "smoke",
+      "repo_path": "fixtures/buggy-validation-repo",
+      "bug_shape": "single-file inverted validation branch",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["user_rules/age.py"],
+      "allowed_changed_files": ["user_rules/age.py"],
+      "minimum_changed_files": 1,
+      "labels": ["demo", "validation"]
+    },
+    {
+      "name": "mock-store-python",
+      "suite": "smoke",
+      "repo_path": "fixtures/mock-store-python",
+      "bug_shape": "single-file ecommerce pricing bug",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["mock_store/pricing.py"],
+      "allowed_changed_files": ["mock_store/pricing.py"],
+      "minimum_changed_files": 1,
+      "labels": ["demo", "smoke"]
+    },
+    {
+      "name": "multifile-calendar-window",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-calendar-window",
+      "bug_shape": "calendar constants and inclusive window drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["calendar_rules/constants.py", "calendar_rules/window.py"],
+      "allowed_changed_files": ["calendar_rules/constants.py", "calendar_rules/window.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_calendar_rules.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-entitlement-ledger",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-entitlement-ledger",
+      "bug_shape": "webhook normalization, entitlement policy, ledger delta, and idempotency drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": [
+        "entitlements/events.py",
+        "entitlements/policy.py",
+        "entitlements/ledger.py",
+        "entitlements/processor.py"
+      ],
+      "allowed_changed_files": [
+        "entitlements/events.py",
+        "entitlements/policy.py",
+        "entitlements/ledger.py",
+        "entitlements/processor.py"
+      ],
+      "minimum_changed_files": 4,
+      "expected_validation_commands": ["pytest tests/test_webhook_processor.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile", "flagship"]
+    },
+    {
+      "name": "multifile-inventory-state",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-inventory-state",
+      "bug_shape": "state transition threshold mismatch",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["inventory/policy.py", "inventory/state.py"],
+      "allowed_changed_files": ["inventory/policy.py", "inventory/state.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_inventory.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-parser-validator",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-parser-validator",
+      "bug_shape": "parser and validator separator drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["querytools/parser.py", "querytools/validator.py"],
+      "allowed_changed_files": ["querytools/parser.py", "querytools/validator.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_querytools.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-permissions-contract",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-permissions-contract",
+      "bug_shape": "default role and permission checker drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["access/defaults.py", "access/permissions.py"],
+      "allowed_changed_files": ["access/defaults.py", "access/permissions.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_access.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-profile-contract",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-profile-contract",
+      "bug_shape": "normalizer and validator contract drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["profiles/normalizer.py", "profiles/validators.py"],
+      "allowed_changed_files": ["profiles/normalizer.py", "profiles/validators.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_profiles.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-reexport-drift",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-reexport-drift",
+      "bug_shape": "public API re-export and implementation drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["texttools/__init__.py", "texttools/slugs.py"],
+      "allowed_changed_files": ["texttools/__init__.py", "texttools/slugs.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_texttools.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-retry-partial-trap",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-retry-partial-trap",
+      "bug_shape": "partial targeted-test trap requiring retry",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["shop/discounts.py", "shop/cart.py"],
+      "allowed_changed_files": ["shop/discounts.py", "shop/cart.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_discounts.py", "pytest"],
+      "expected_failure_category": "targeted_tests_failed",
+      "flagship": true,
+      "labels": ["multifile", "retry"]
+    },
+    {
+      "name": "multifile-serialization-drift",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-serialization-drift",
+      "bug_shape": "serializer and deserializer field-name drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["ledger/serializer.py", "ledger/deserializer.py"],
+      "allowed_changed_files": ["ledger/serializer.py", "ledger/deserializer.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_ledger.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-shipping-rules",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-shipping-rules",
+      "bug_shape": "cross-module threshold contract drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["shipping/constants.py", "shipping/rates.py"],
+      "allowed_changed_files": ["shipping/constants.py", "shipping/rates.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_shipping.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    },
+    {
+      "name": "multifile-taxes-rounding",
+      "suite": "v2-multifile",
+      "repo_path": "fixtures/multifile-taxes-rounding",
+      "bug_shape": "tax constant and rounding behavior drift",
+      "test_command": "pytest",
+      "expected_changed_source_files": ["billing/tax.py", "billing/invoice.py"],
+      "allowed_changed_files": ["billing/tax.py", "billing/invoice.py"],
+      "minimum_changed_files": 2,
+      "expected_validation_commands": ["pytest tests/test_billing.py", "pytest"],
+      "flagship": true,
+      "labels": ["multifile"]
+    }
+  ]
+}

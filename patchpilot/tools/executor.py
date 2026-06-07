@@ -25,6 +25,7 @@ class ToolExecutor:
         arguments: dict[str, Any] | BaseModel,
         context: ToolContext,
     ) -> BaseModel:
+        """Validate, authorize, trace, retry, and type-check one tool call."""
         spec = self.registry.get(tool_name)
         self._check_permission(spec, context)
         model_input = self._validate_input(spec, arguments)

@@ -1,3 +1,5 @@
+"""Shared pytest setup for keeping repo-local temp paths predictable."""
+
 from __future__ import annotations
 
 import sys

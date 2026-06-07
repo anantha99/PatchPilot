@@ -1,4 +1,4 @@
-"""In-session memory and eval support tools."""
+"""In-session artifact tools for observations, decisions, phases, and exports."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from patchpilot.schemas.tool_io import (
     DecisionInput,
     DecisionOutput,
     EvalScoreOutput,
-    FixtureInput,
     ObservationInput,
     ObservationOutput,
     PhaseInput,
@@ -36,8 +35,8 @@ def _bucket(context: ToolContext, key: str) -> list:
 
 def register(registry: ToolRegistry) -> None:
     @registry.tool(
-        name="memory_eval.record_observation",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.record_observation",
+        namespace=ToolNamespace.SESSION,
         description="Record a structured observation in session memory.",
         input_schema=ObservationInput,
         output_schema=ObservationOutput,
@@ -49,8 +48,8 @@ def register(registry: ToolRegistry) -> None:
         return ObservationOutput(observation_id=observation_id)
 
     @registry.tool(
-        name="memory_eval.summarize_context",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.summarize_context",
+        namespace=ToolNamespace.SESSION,
         description="Summarize recent observations for compact model context.",
         input_schema=ContextSummaryInput,
         output_schema=ContextSummaryOutput,
@@ -61,8 +60,8 @@ def register(registry: ToolRegistry) -> None:
         return ContextSummaryOutput(summary=text[: input.max_chars])
 
     @registry.tool(
-        name="memory_eval.retrieve_artifacts",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.retrieve_artifacts",
+        namespace=ToolNamespace.SESSION,
         description="Retrieve selected or all session artifacts.",
         input_schema=RetrieveArtifactsInput,
         output_schema=ArtifactsOutput,
@@ -70,12 +69,12 @@ def register(registry: ToolRegistry) -> None:
     )
     async def retrieve_artifacts(input: RetrieveArtifactsInput, context: ToolContext) -> ArtifactsOutput:
         if input.keys is None:
-            return ArtifactsOutput(artifacts=context.artifacts)
-        return ArtifactsOutput(artifacts={key: context.artifacts.get(key) for key in input.keys})
+            return ArtifactsOutput(artifacts=_json_safe(context.artifacts))
+        return ArtifactsOutput(artifacts={key: _json_safe(context.artifacts.get(key)) for key in input.keys})
 
     @registry.tool(
-        name="memory_eval.record_decision",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.record_decision",
+        namespace=ToolNamespace.SESSION,
         description="Record a runtime decision and reason.",
         input_schema=DecisionInput,
         output_schema=DecisionOutput,
@@ -87,8 +86,8 @@ def register(registry: ToolRegistry) -> None:
         return DecisionOutput(decision_id=decision_id)
 
     @registry.tool(
-        name="memory_eval.store_artifact",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.store_artifact",
+        namespace=ToolNamespace.SESSION,
         description="Store a named JSON-serializable artifact.",
         input_schema=ArtifactInput,
         output_schema=JsonObject,
@@ -105,19 +104,19 @@ def register(registry: ToolRegistry) -> None:
         return JsonObject(data={"key": input.key, "stored": True})
 
     @registry.tool(
-        name="memory_eval.load_artifact",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.load_artifact",
+        namespace=ToolNamespace.SESSION,
         description="Load a named artifact from session memory.",
         input_schema=ArtifactKeyInput,
         output_schema=JsonObject,
         permission=Permission.READ,
     )
     async def load_artifact(input: ArtifactKeyInput, context: ToolContext) -> JsonObject:
-        return JsonObject(data={"key": input.key, "value": context.artifacts.get(input.key)})
+        return JsonObject(data={"key": input.key, "value": _json_safe(context.artifacts.get(input.key))})
 
     @registry.tool(
-        name="memory_eval.mark_phase",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.mark_phase",
+        namespace=ToolNamespace.SESSION,
         description="Record the current runtime phase.",
         input_schema=PhaseInput,
         output_schema=TextOutput,
@@ -128,21 +127,9 @@ def register(registry: ToolRegistry) -> None:
         return TextOutput(text=input.phase)
 
     @registry.tool(
-        name="memory_eval.load_fixture_metadata",
-        namespace=ToolNamespace.MEMORY_EVAL,
-        description="Load metadata for a known eval fixture.",
-        input_schema=FixtureInput,
-        output_schema=JsonObject,
-        permission=Permission.READ,
-    )
-    async def load_fixture_metadata(input: FixtureInput, context: ToolContext) -> JsonObject:
-        fixture_root = Path(context.repo_root)
-        return JsonObject(data={"fixture": input.fixture, "root": str(fixture_root), "expected_changed_file": "buggy_math/calculator.py"})
-
-    @registry.tool(
-        name="memory_eval.assert_trace_properties",
-        namespace=ToolNamespace.MEMORY_EVAL,
-        description="Assert basic assignment properties from the current trace.",
+        name="session.assert_trace_properties",
+        namespace=ToolNamespace.SESSION,
+        description="Assert basic trace quality properties from the current session.",
         input_schema=TraceAssertInput,
         output_schema=EvalScoreOutput,
         permission=Permission.READ,
@@ -153,8 +140,8 @@ def register(registry: ToolRegistry) -> None:
         return EvalScoreOutput(passed=all(checks.values()), score=sum(checks.values()) / len(checks), checks=checks)
 
     @registry.tool(
-        name="memory_eval.export_session",
-        namespace=ToolNamespace.MEMORY_EVAL,
+        name="session.export_session",
+        namespace=ToolNamespace.SESSION,
         description="Export session memory as a JSON object.",
         input_schema=EmptyInput,
         output_schema=JsonObject,

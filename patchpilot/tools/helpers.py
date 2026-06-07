@@ -1,4 +1,4 @@
-"""Shared helpers for local repo tools."""
+"""Shared path-safety and text-search helpers for local repo tools."""
 
 from __future__ import annotations
 
@@ -14,6 +14,28 @@ from pathlib import Path
 from patchpilot.errors import ExecutionTimeoutError, PolicyError, ToolError
 from patchpilot.schemas.common import CommandRisk
 from patchpilot.schemas.tool_io import CommandOutput
+
+IGNORED_DIR_NAMES = {
+    ".git",
+    ".mypy_cache",
+    ".nox",
+    ".patchpilot",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "env",
+    "htmlcov",
+    "node_modules",
+    "venv",
+}
+IGNORED_FILE_NAMES = {
+    ".coverage",
+    "coverage.xml",
+}
 
 
 def repo_path(repo_root: Path, path: Path | str) -> Path:
@@ -39,6 +61,33 @@ def read_text(path: Path, max_bytes: int | None = None) -> str:
     if max_bytes is not None:
         data = data[:max_bytes]
     return data.decode("utf-8", errors="replace")
+
+
+def iter_repo_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    if not root.exists():
+        return files
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if is_ignored_repo_path(path, root):
+            continue
+        if is_binary_file(path):
+            continue
+        files.append(path)
+    return files
+
+
+def is_ignored_repo_path(path: Path, root: Path) -> bool:
+    rel = rel_path(root, path)
+    return any(part in IGNORED_DIR_NAMES for part in rel.parts) or rel.name in IGNORED_FILE_NAMES
+
+
+def is_binary_file(path: Path) -> bool:
+    try:
+        return b"\0" in path.read_bytes()[:1024]
+    except OSError:
+        return True
 
 
 def sha256_file(path: Path) -> str:
@@ -83,12 +132,14 @@ async def run_process(
     start = time.perf_counter()
     if risk == CommandRisk.HIGH and not allow_high_risk:
         raise PolicyError("High-risk command execution requires explicit high-risk handling")
+    env = {**os.environ}
+    env.pop("PYTEST_ADDOPTS", None)
     process = await asyncio.create_subprocess_shell(
         command,
         cwd=repo_root,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ},
+        env=env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
@@ -108,11 +159,9 @@ async def run_process(
 
 def grep_text(root: Path, query: str, max_results: int) -> list[tuple[Path, int, str]]:
     results: list[tuple[Path, int, str]] = []
-    for path in root.rglob("*"):
+    for path in iter_repo_files(root):
         if len(results) >= max_results:
             break
-        if not path.is_file() or ".git" in path.parts:
-            continue
         try:
             for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if query in line:
@@ -127,11 +176,9 @@ def grep_text(root: Path, query: str, max_results: int) -> list[tuple[Path, int,
 def grep_regex(root: Path, pattern: str, max_results: int) -> list[tuple[Path, int, str]]:
     regex = re.compile(pattern)
     results: list[tuple[Path, int, str]] = []
-    for path in root.rglob("*"):
+    for path in iter_repo_files(root):
         if len(results) >= max_results:
             break
-        if not path.is_file() or ".git" in path.parts:
-            continue
         try:
             for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if regex.search(line):
